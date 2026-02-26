@@ -1,0 +1,468 @@
+// src/pages/EditProfile.jsx
+import { useState, useEffect, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import {
+  FaUser,
+  FaPhone,
+  FaTint,
+  FaHome,
+  FaUserFriends,
+  FaLock,
+  FaCheckCircle,
+  FaTimesCircle,
+  FaUpload,
+  FaSpinner,
+} from 'react-icons/fa';
+import axios from 'axios';
+
+function EditProfile() {
+  const { user, setUser } = useAuth();
+  const navigate = useNavigate();
+  const fileInputRef = useRef(null);
+
+  const [formData, setFormData] = useState({
+    username: user?.username || '',
+    phone: user?.phone || '',
+    bloodGroup: user?.bloodGroup || '',
+    address: user?.address || '',
+    emergencyContactName: user?.emergencyContact?.name || '',
+    emergencyContactPhone: user?.emergencyContact?.phone || '',
+    isAvailable: user?.isAvailable ?? true,
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: '',
+  });
+
+  const [avatarPreview, setAvatarPreview] = useState(user?.avatar || null);
+  const [avatarFile, setAvatarFile] = useState(null);
+
+  const [loading, setLoading] = useState(false);
+  const [fetching, setFetching] = useState(true);
+  const [successMsg, setSuccessMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
+  const [fieldErrors, setFieldErrors] = useState({});
+
+  // Fetch latest user data on mount
+  useEffect(() => {
+    const fetchLatestUser = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        if (!token) return navigate('/login');
+
+        const res = await axios.get('/api/auth/me');
+
+        const freshUser = res.data.user || res.data;
+        setUser(freshUser);
+
+        setFormData({
+          username: freshUser.username || '',
+          phone: freshUser.phone || '',
+          bloodGroup: freshUser.bloodGroup || '',
+          address: freshUser.address || '',
+          emergencyContactName: freshUser.emergencyContact?.name || '',
+          emergencyContactPhone: freshUser.emergencyContact?.phone || '',
+          isAvailable: freshUser.isAvailable ?? true,
+          currentPassword: '',
+          newPassword: '',
+          confirmPassword: '',
+        });
+
+        setAvatarPreview(freshUser.avatar || null);
+      } catch (err) {
+        console.error('Failed to load profile:', err);
+        setErrorMsg('Could not load your profile data');
+      } finally {
+        setFetching(false);
+      }
+    };
+
+    fetchLatestUser();
+  }, [navigate, setUser]);
+
+  // Real-time field validation
+  const validateField = (name, value) => {
+    let error = '';
+    switch (name) {
+      case 'username':
+        if (!value.trim()) error = 'Username is required';
+        else if (value.length < 3) error = 'Username must be at least 3 characters';
+        break;
+      case 'phone':
+        if (!value.trim()) error = 'Phone number is required';
+        else if (!/^\d{9,10}$/.test(value)) error = 'Enter a valid 9–10 digit phone number';
+        break;
+      case 'bloodGroup':
+        if (!value) error = 'Blood group is required';
+        break;
+      case 'emergencyContactPhone':
+        if (value && !/^\d{9,10}$/.test(value)) error = 'Enter a valid 9–10 digit phone number';
+        break;
+      case 'newPassword':
+        if (value && value.length < 8) error = 'Password must be at least 8 characters';
+        break;
+      case 'confirmPassword':
+        if (value && value !== formData.newPassword) error = 'Passwords do not match';
+        break;
+      default:
+        break;
+    }
+    return error;
+  };
+
+  const handleChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    const newValue = type === 'checkbox' ? checked : value;
+
+    setFormData((prev) => ({ ...prev, [name]: newValue }));
+
+    // Live validation
+    const error = validateField(name, newValue);
+    setFieldErrors((prev) => ({ ...prev, [name]: error }));
+  };
+
+  const handleAvatarChange = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (file.size > 2 * 1024 * 1024) {
+      setErrorMsg('Image size should be less than 2MB');
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      setErrorMsg('Please upload an image file (jpg, png, etc.)');
+      return;
+    }
+
+    setAvatarFile(file);
+
+    const reader = new FileReader();
+    reader.onloadend = () => setAvatarPreview(reader.result);
+    reader.readAsDataURL(file);
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setSuccessMsg('');
+    setErrorMsg('');
+    setFieldErrors({});
+
+    // Final validation before submit
+    const errors = {};
+    Object.keys(formData).forEach((key) => {
+      const err = validateField(key, formData[key]);
+      if (err) errors[key] = err;
+    });
+
+    // Password change is optional — only validate if attempting it
+    if (formData.newPassword || formData.currentPassword || formData.confirmPassword) {
+      if (!formData.currentPassword) errors.currentPassword = 'Current password is required';
+      if (!formData.newPassword) errors.newPassword = 'New password is required';
+      if (formData.newPassword !== formData.confirmPassword) errors.confirmPassword = 'Passwords do not match';
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      setErrorMsg('Please fix the errors above');
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const formDataToSend = new FormData();
+
+      // Append normal fields
+      Object.entries(formData).forEach(([key, value]) => {
+        if (!['currentPassword', 'newPassword', 'confirmPassword'].includes(key)) {
+          formDataToSend.append(key, value);
+        }
+      });
+
+      // Append password change only if user entered it
+      if (formData.newPassword) {
+        formDataToSend.append('currentPassword', formData.currentPassword);
+        formDataToSend.append('newPassword', formData.newPassword);
+      }
+
+      // Append avatar if changed
+      if (avatarFile) {
+        formDataToSend.append('avatar', avatarFile);
+      }
+
+      const res = await axios.patch('/api/auth/profile', formDataToSend, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+
+      if (res.data.success) {
+        setSuccessMsg('Profile updated successfully!');
+        setUser(res.data.user || { ...user, ...formData });
+        // Reset password fields & file
+        setFormData((prev) => ({
+          ...prev,
+          currentPassword: '',
+          newPassword: '',
+          confirmPassword: '',
+        }));
+        setAvatarFile(null);
+      }
+    } catch (err) {
+      const errMsg = err.response?.data?.message || 'Failed to update profile. Please try again.';
+      setErrorMsg(errMsg);
+
+      // Show backend field errors if any
+      if (err.response?.data?.errors) {
+        setFieldErrors(err.response.data.errors);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (fetching) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-b from-red-50 to-white">
+        <FaSpinner className="text-6xl text-red-600 animate-spin" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-b from-red-50 via-white to-white py-8 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-3xl mx-auto">
+        {/* Header */}
+        <div className="text-center mb-10">
+          <div className="inline-block relative mb-4">
+            <div className="w-32 h-32 rounded-full overflow-hidden border-4 border-white shadow-xl bg-gray-100">
+              {avatarPreview ? (
+                <img src={avatarPreview} alt="Profile" className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center bg-red-100 text-red-600">
+                  <FaUser className="text-6xl" />
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="absolute bottom-0 right-0 bg-red-600 text-white p-2 rounded-full shadow-lg hover:bg-red-700 transition"
+            >
+              <FaUpload />
+            </button>
+            <input
+              type="file"
+              ref={fileInputRef}
+              accept="image/*"
+              onChange={handleAvatarChange}
+              className="hidden"
+            />
+          </div>
+          <h1 className="text-3xl font-bold text-gray-900">Edit Profile</h1>
+          <p className="text-gray-600 mt-2">
+            Update your details for better matching and safety
+          </p>
+        </div>
+
+        {/* Messages */}
+        {successMsg && (
+          <div className="mb-6 p-4 bg-green-50 border-l-4 border-green-500 text-green-700 rounded-r-xl flex items-center gap-3">
+            <FaCheckCircle className="text-xl" />
+            {successMsg}
+          </div>
+        )}
+
+        {errorMsg && (
+          <div className="mb-6 p-4 bg-red-50 border-l-4 border-red-500 text-red-700 rounded-r-xl flex items-center gap-3">
+            <FaTimesCircle className="text-xl" />
+            {errorMsg}
+          </div>
+        )}
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} className="bg-white rounded-3xl shadow-xl border border-red-100 p-8">
+          <div className="grid md:grid-cols-2 gap-6">
+            {/* Username */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Username</label>
+              <input
+                type="text"
+                name="username"
+                value={formData.username}
+                onChange={handleChange}
+                className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.username ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
+                required
+              />
+              {fieldErrors.username && <p className="mt-1 text-sm text-red-600">{fieldErrors.username}</p>}
+            </div>
+
+            {/* Phone */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Phone Number</label>
+              <input
+                type="tel"
+                name="phone"
+                value={formData.phone}
+                onChange={handleChange}
+                placeholder="9841234567"
+                className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.phone ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
+                required
+              />
+              {fieldErrors.phone && <p className="mt-1 text-sm text-red-600">{fieldErrors.phone}</p>}
+            </div>
+
+            {/* Blood Group */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                Blood Group <span className="text-red-600">*</span>
+              </label>
+              <select
+                name="bloodGroup"
+                value={formData.bloodGroup}
+                onChange={handleChange}
+                className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.bloodGroup ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none bg-white transition`}
+                required
+              >
+                <option value="">Select blood group</option>
+                {['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'].map((bg) => (
+                  <option key={bg} value={bg}>{bg}</option>
+                ))}
+              </select>
+              {fieldErrors.bloodGroup && <p className="mt-1 text-sm text-red-600">{fieldErrors.bloodGroup}</p>}
+            </div>
+
+            {/* Address */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Address</label>
+              <input
+                type="text"
+                name="address"
+                value={formData.address}
+                onChange={handleChange}
+                placeholder="e.g. Kathmandu, Nepal"
+                className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
+              />
+            </div>
+
+            {/* Emergency Contact Name */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Emergency Contact Name</label>
+              <input
+                type="text"
+                name="emergencyContactName"
+                value={formData.emergencyContactName}
+                onChange={handleChange}
+                placeholder="e.g. Ram Sharma"
+                className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
+              />
+            </div>
+
+            {/* Emergency Contact Phone */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Emergency Contact Phone</label>
+              <input
+                type="tel"
+                name="emergencyContactPhone"
+                value={formData.emergencyContactPhone}
+                onChange={handleChange}
+                placeholder="e.g. 9845678901"
+                className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.emergencyContactPhone ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
+              />
+              {fieldErrors.emergencyContactPhone && (
+                <p className="mt-1 text-sm text-red-600">{fieldErrors.emergencyContactPhone}</p>
+              )}
+            </div>
+
+            {/* Availability (only show for donors) */}
+            {(user?.role === 'donor' || formData.isAvailable !== undefined) && (
+              <div className="md:col-span-2 flex items-center gap-3 pt-2">
+                <input
+                  type="checkbox"
+                  name="isAvailable"
+                  id="isAvailable"
+                  checked={formData.isAvailable}
+                  onChange={handleChange}
+                  className="w-5 h-5 text-red-600 border-gray-300 rounded focus:ring-red-500"
+                />
+                <label htmlFor="isAvailable" className="text-gray-700 font-medium">
+                  Available to donate right now
+                </label>
+              </div>
+            )}
+
+            {/* Password Change */}
+            <div className="md:col-span-2 pt-6 border-t border-gray-200">
+              <h3 className="text-lg font-semibold text-gray-800 mb-4">Change Password (optional)</h3>
+              <div className="grid md:grid-cols-3 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Current Password</label>
+                  <input
+                    type="password"
+                    name="currentPassword"
+                    value={formData.currentPassword}
+                    onChange={handleChange}
+                    className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.currentPassword ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
+                    placeholder="••••••••"
+                  />
+                  {fieldErrors.currentPassword && <p className="mt-1 text-sm text-red-600">{fieldErrors.currentPassword}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">New Password</label>
+                  <input
+                    type="password"
+                    name="newPassword"
+                    value={formData.newPassword}
+                    onChange={handleChange}
+                    className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.newPassword ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
+                    placeholder="At least 8 characters"
+                  />
+                  {fieldErrors.newPassword && <p className="mt-1 text-sm text-red-600">{fieldErrors.newPassword}</p>}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Confirm New Password</label>
+                  <input
+                    type="password"
+                    name="confirmPassword"
+                    value={formData.confirmPassword}
+                    onChange={handleChange}
+                    className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.confirmPassword ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
+                    placeholder="Confirm password"
+                  />
+                  {fieldErrors.confirmPassword && <p className="mt-1 text-sm text-red-600">{fieldErrors.confirmPassword}</p>}
+                </div>
+              </div>
+            </div>
+
+            {/* Submit Button */}
+            <div className="md:col-span-2 pt-6">
+              <button
+                type="submit"
+                disabled={loading}
+                className={`w-full py-4 px-6 bg-gradient-to-r from-red-600 to-rose-600 text-white font-bold rounded-xl shadow-lg hover:shadow-2xl hover:scale-[1.02] transition-all duration-300 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-3`}
+              >
+                {loading && <FaSpinner className="animate-spin" />}
+                {loading ? 'Saving Changes...' : 'Save Profile'}
+              </button>
+            </div>
+          </div>
+        </form>
+
+        {/* Back to Dashboard */}
+        <div className="mt-10 text-center">
+          <button
+            onClick={() => navigate('/dashboard')}
+            className="text-red-600 hover:text-red-800 font-medium transition-colors"
+          >
+            ← Back to Dashboard
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default EditProfile;

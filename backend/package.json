@@ -7,8 +7,9 @@
     "start": "NODE_ENV=production node server.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
+    "compression": "^1.8.1",
     "cors": "^2.8.5",
-    "compression": "^1.8.1"
+    "express": "^4.19.2",
+    "multer": "^2.0.2"
   }
 }

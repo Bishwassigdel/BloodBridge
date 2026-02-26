@@ -1,221 +1,236 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import Navbar from '../components/Navbar'
-import Footer from '../components/Footer'
-import { bloodGroups } from '../data/dummyData'
+// src/pages/BloodRequest.jsx
+import { useLocation, useNavigate } from 'react-router-dom'; // ← add useNavigate
+import { useState, useEffect } from 'react'; // ← add useEffect for fallback
+import axios from 'axios';
 
-/**
- * Blood Request Page Component
- * Form to create a new blood request
- */
-function BloodRequest({ user, onLogout }) {
-  const navigate = useNavigate()
+function BloodRequest() {
+  const location = useLocation();
+  const navigate = useNavigate(); // ← new
+  const searchParams = new URLSearchParams(location.search);
+  const isEmergency = searchParams.get('mode') === 'emergency';
+
   const [formData, setFormData] = useState({
-    bloodGroup: user.bloodGroup || '',
-    units: '',
-    urgency: 'Medium',
-    location: user.location || '',
+    bloodGroup: '',
+    units: '1',
     hospital: '',
-    contact: user.phone || '',
-    notes: ''
-  })
-  const [submitted, setSubmitted] = useState(false)
+    contactPhone: '',
+    note: '',
+  });
+
+  const [submitted, setSubmitted] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  // Fallback check: if no token, redirect to login (ProtectedRoute should handle this, but extra safety)
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      navigate('/login', { state: { from: location }, replace: true });
+    }
+  }, [navigate, location]);
 
   const handleChange = (e) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value
-    })
-  }
+    setFormData({ ...formData, [e.target.name]: e.target.value });
+    setError('');
+  };
 
-  const handleSubmit = (e) => {
-    e.preventDefault()
-    
-    // In a real app, this would make an API call
-    console.log('Blood request submitted:', formData)
-    
-    // Show success message
-    setSubmitted(true)
-    
-    // Redirect to dashboard after 2 seconds
-    setTimeout(() => {
-      if (user.role === 'receiver') {
-        navigate('/receiver/dashboard')
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+
+    try {
+      const payload = {
+        hospital: formData.hospital,
+        bloodGroup: formData.bloodGroup,
+        units: Number(formData.units),
+        urgency: isEmergency ? 'emergency' : 'normal',
+        location: formData.hospital,
+        contactPhone: formData.contactPhone,
+        note: formData.note
+      };
+
+      const token = localStorage.getItem('token');
+      if (!token) throw new Error('Please login first');
+
+      const res = await axios.post('/api/blood/request', payload);
+
+      if (res.data.success) {
+        setSubmitted(true);
+
+        if (isEmergency) {
+          setTimeout(() => {
+            window.open(
+              `https://wa.me/9779801230045?text=Emergency%20blood%20request%3A%20${formData.bloodGroup}%20(${formData.units}%20units)%20needed%20at%20${formData.hospital}%2C%20Contact%3A%20${formData.contactPhone}%20Note%3A%20${formData.note}`,
+              '_blank'
+            );
+          }, 1500);
+        }
       } else {
-        navigate('/')
+        setError(res.data.message || 'Failed to submit request');
       }
-    }, 2000)
-  }
-
-  if (submitted) {
-    return (
-      <div className="min-h-screen flex flex-col">
-        <Navbar user={user} onLogout={onLogout} />
-        <main className="flex-grow flex items-center justify-center bg-gray-50 py-12">
-          <div className="bg-white p-8 rounded-lg shadow-lg text-center">
-            <div className="text-5xl mb-4">✅</div>
-            <h2 className="text-2xl font-bold text-green-600 mb-2">Request Submitted!</h2>
-            <p className="text-gray-600">Your blood request has been submitted successfully.</p>
-            <p className="text-gray-500 text-sm mt-2">Redirecting to dashboard...</p>
-          </div>
-        </main>
-        <Footer />
-      </div>
-    )
-  }
+    } catch (err) {
+      setError(
+        err.response?.data?.message || 
+        err.message || 
+        'Something went wrong. Please try again.'
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <Navbar user={user} onLogout={() => {}} />
-      
-      <main className="flex-grow bg-gray-50 py-8">
-        <div className="container mx-auto px-4 max-w-2xl">
-          <h1 className="text-3xl font-bold text-red-600 mb-8">Create Blood Request</h1>
-
-          <div className="bg-white rounded-lg shadow-md p-6">
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div>
-                <label htmlFor="bloodGroup" className="block text-gray-700 font-medium mb-2">
-                  Blood Group Required *
-                </label>
-                <select
-                  id="bloodGroup"
-                  name="bloodGroup"
-                  value={formData.bloodGroup}
-                  onChange={handleChange}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                  required
-                >
-                  <option value="">Select Blood Group</option>
-                  {bloodGroups.map((bg) => (
-                    <option key={bg} value={bg}>
-                      {bg}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="units" className="block text-gray-700 font-medium mb-2">
-                  Number of Units Required *
-                </label>
-                <input
-                  type="number"
-                  id="units"
-                  name="units"
-                  value={formData.units}
-                  onChange={handleChange}
-                  min="1"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                  required
-                />
-              </div>
-
-              <div>
-                <label htmlFor="urgency" className="block text-gray-700 font-medium mb-2">
-                  Urgency Level *
-                </label>
-                <select
-                  id="urgency"
-                  name="urgency"
-                  value={formData.urgency}
-                  onChange={handleChange}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                  required
-                >
-                  <option value="Low">Low</option>
-                  <option value="Medium">Medium</option>
-                  <option value="High">High</option>
-                </select>
-              </div>
-
-              <div>
-                <label htmlFor="location" className="block text-gray-700 font-medium mb-2">
-                  Location *
-                </label>
-                <input
-                  type="text"
-                  id="location"
-                  name="location"
-                  value={formData.location}
-                  onChange={handleChange}
-                  placeholder="City, State"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                  required
-                />
-              </div>
-
-              <div>
-                <label htmlFor="hospital" className="block text-gray-700 font-medium mb-2">
-                  Hospital/Clinic Name *
-                </label>
-                <input
-                  type="text"
-                  id="hospital"
-                  name="hospital"
-                  value={formData.hospital}
-                  onChange={handleChange}
-                  placeholder="Enter hospital name"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                  required
-                />
-              </div>
-
-              <div>
-                <label htmlFor="contact" className="block text-gray-700 font-medium mb-2">
-                  Contact Number *
-                </label>
-                <input
-                  type="tel"
-                  id="contact"
-                  name="contact"
-                  value={formData.contact}
-                  onChange={handleChange}
-                  placeholder="+1234567890"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                  required
-                />
-              </div>
-
-              <div>
-                <label htmlFor="notes" className="block text-gray-700 font-medium mb-2">
-                  Additional Notes
-                </label>
-                <textarea
-                  id="notes"
-                  name="notes"
-                  value={formData.notes}
-                  onChange={handleChange}
-                  rows="4"
-                  placeholder="Any additional information..."
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                />
-              </div>
-
-              <div className="flex gap-4">
-                <button
-                  type="submit"
-                  className="flex-1 bg-red-600 hover:bg-red-700 text-white font-semibold py-3 rounded-lg transition"
-                >
-                  Submit Request
-                </button>
-                <button
-                  type="button"
-                  onClick={() => navigate(-1)}
-                  className="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-semibold py-3 rounded-lg transition"
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
+    <div className="min-h-screen bg-gradient-to-b from-red-50 via-white to-white py-12 px-4">
+      <div className="max-w-2xl mx-auto bg-white rounded-3xl shadow-2xl border border-red-100 p-8 lg:p-10">
+        {isEmergency && (
+          <div className="bg-red-100 border-l-4 border-red-600 p-5 mb-8 rounded-r-xl">
+            <h2 className="text-2xl font-bold text-red-800">🚑 EMERGENCY BLOOD NEEDED</h2>
+            <p className="text-red-700 mt-2">
+              Please fill only essential details — we prioritize these requests!
+            </p>
           </div>
-        </div>
-      </main>
+        )}
 
-      <Footer />
+        <h1 className="text-3xl font-extrabold text-gray-900 mb-8 text-center">
+          {isEmergency ? 'Emergency Blood Request' : 'Request Blood'}
+        </h1>
+
+        {submitted ? (
+          <div className="text-center py-12">
+            <div className="text-6xl mb-6">🩸</div>
+            <h2 className="text-3xl font-bold text-red-700 mb-4">
+              {isEmergency ? 'Emergency Request Sent!' : 'Request Submitted!'}
+            </h2>
+            <p className="text-xl mb-8 text-gray-700">
+              {isEmergency 
+                ? 'We notified matching donors near you. Connecting to helpline...' 
+                : 'We will match donors and notify you soon.'}
+            </p>
+            {isEmergency && (
+              <p className="text-red-600 font-semibold">
+                If no response in 5 minutes, call: 9801230045
+              </p>
+            )}
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-6">
+            {error && (
+              <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+                <strong className="font-bold">Error: </strong>
+                <span className="block sm:inline">{error}</span>
+              </div>
+            )}
+
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Blood Group Needed <span className="text-red-600">*</span>
+              </label>
+              <select
+                name="bloodGroup"
+                value={formData.bloodGroup}
+                onChange={handleChange}
+                required
+                className="w-full px-5 py-4 rounded-2xl border border-red-100 focus:border-red-400 focus:ring-2 focus:ring-red-100 outline-none bg-white transition-all"
+              >
+                <option value="">Select blood group</option>
+                <option>A+</option>
+                <option>A-</option>
+                <option>B+</option>
+                <option>B-</option>
+                <option>O+</option>
+                <option>O-</option>
+                <option>AB+</option>
+                <option>AB-</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Units Needed <span className="text-red-600">*</span>
+              </label>
+              <input
+                type="number"
+                name="units"
+                min="1"
+                max="10"
+                value={formData.units}
+                onChange={handleChange}
+                required
+                className="w-full px-5 py-4 rounded-2xl border border-red-100 focus:border-red-400 focus:ring-2 focus:ring-red-100 outline-none bg-white transition-all"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Hospital Name & District <span className="text-red-600">*</span>
+              </label>
+              <input
+                type="text"
+                name="hospital"
+                placeholder="e.g. Teaching Hospital, Kathmandu"
+                value={formData.hospital}
+                onChange={handleChange}
+                required
+                className="w-full px-5 py-4 rounded-2xl border border-red-100 focus:border-red-400 focus:ring-2 focus:ring-red-100 outline-none bg-white transition-all"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Contact Phone Number <span className="text-red-600">*</span>
+              </label>
+              <input
+                type="tel"
+                name="contactPhone"
+                placeholder="98XXXXXXXX"
+                value={formData.contactPhone}
+                onChange={handleChange}
+                required
+                pattern="[0-9]{10}"
+                className="w-full px-5 py-4 rounded-2xl border border-red-100 focus:border-red-400 focus:ring-2 focus:ring-red-100 outline-none bg-white transition-all"
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Additional Note {isEmergency ? '(optional, max 100 chars)' : '(optional)'}
+              </label>
+              <textarea
+                name="note"
+                value={formData.note}
+                onChange={handleChange}
+                maxLength={isEmergency ? 100 : 500}
+                rows={isEmergency ? 2 : 4}
+                className="w-full px-5 py-4 rounded-2xl border border-red-100 focus:border-red-400 focus:ring-2 focus:ring-red-100 outline-none bg-white transition-all"
+                placeholder={isEmergency 
+                  ? "e.g. Thalassemia patient, urgent within 2 hours" 
+                  : "Patient details, when needed, etc."}
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className={`w-full py-4 rounded-xl text-white font-bold text-lg transition-all ${
+                loading ? 'opacity-60 cursor-not-allowed' : ''
+              } ${
+                isEmergency 
+                  ? 'bg-red-700 hover:bg-red-800 shadow-2xl hover:shadow-3xl' 
+                  : 'bg-red-600 hover:bg-red-700 shadow-lg hover:shadow-2xl'
+              }`}
+            >
+              {loading 
+                ? 'Submitting...' 
+                : isEmergency 
+                  ? 'SEND EMERGENCY REQUEST' 
+                  : 'Submit Request'}
+            </button>
+          </form>
+        )}
+      </div>
     </div>
-  )
+  );
 }
 
-export default BloodRequest
-
+export default BloodRequest;

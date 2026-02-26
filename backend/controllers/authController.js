@@ -1,233 +1,204 @@
-// // controllers/authController.js
-// import User from '../models/user.js';
-// import bcrypt from 'bcryptjs';
-// import jwt from 'jsonwebtoken';
-
-// export const signupUser = async (req, res) => {
-//   const { username, email, password, bloodGroup, phone, location, role } = req.body;
-
-//   // Validate role
-//   if (!['donor', 'receiver', 'hospital'].includes(role)) {
-//     return res.status(400).json({ success: false, message: 'Invalid role. Must be donor, receiver, or hospital' });
-//   }
-
-//   // Validate required fields
-//   if (!username || !email || !password) {
-//     return res.status(400).json({ success: false, message: 'Username, email, and password are required' });
-//   }
-
-//   // Validate bloodGroup for donor/receiver
-//   if ((role === 'donor' || role === 'receiver') && !bloodGroup) {
-//     return res.status(400).json({ success: false, message: 'Blood group is required for donor or receiver' });
-//   }
-
-//   if (!location) {
-//     return res.status(400).json({ success: false, message: 'Location is required' });
-//   }
-
-//   try {
-//     const existingUser = await User.findOne({ email });
-//     if (existingUser) {
-//       return res.status(400).json({ success: false, message: 'Email already exists' });
-//     }
-
-//     // Smart bcrypt rounds: 8 in dev (fast), 10 in production (secure)
-//     const rounds = process.env.NODE_ENV === 'production' ? 10 : 8;
-//     const hashedPassword = await bcrypt.hash(password, rounds);
-
-//     const newUser = await User.create({
-//       username,
-//       email,
-//       password: hashedPassword,
-//       bloodGroup: (role === 'donor' || role === 'receiver') ? bloodGroup : undefined,
-//       phone: phone || '',
-//       location,
-//       role
-//     });
-
-//     const token = jwt.sign(
-//       { id: newUser._id, role: newUser.role },
-//       process.env.JWT_SECRET,
-//       { expiresIn: '7d' }
-//     );
-
-//     const userResponse = {
-//       id: newUser._id,
-//       username: newUser.username,
-//       email: newUser.email,
-//       role: newUser.role,
-//       bloodGroup: newUser.bloodGroup,
-//       phone: newUser.phone,
-//       location: newUser.location
-//     };
-
-//     res.status(201).json({
-//       success: true,
-//       token,
-//       user: userResponse
-//     });
-//   } catch (err) {
-//     console.error('Signup error:', err);
-//     res.status(500).json({ success: false, message: 'Server error during registration' });
-//   }
-// };
-
-// export const loginUser = async (req, res) => {
-//   const { email, password } = req.body;
-
-//   if (!email || !password) {
-//     return res.status(400).json({ success: false, message: 'Email and password are required' });
-//   }
-
-//   try {
-//     const user = await User.findOne({ email });
-//     if (!user) {
-//       return res.status(400).json({ success: false, message: 'Invalid email or password' });
-//     }
-
-//     const isMatch = await bcrypt.compare(password, user.password);
-//     if (!isMatch) {
-//       return res.status(400).json({ success: false, message: 'Invalid email or password' });
-//     }
-
-//     const token = jwt.sign(
-//       { id: user._id, role: user.role },
-//       process.env.JWT_SECRET,
-//       { expiresIn: '7d' }
-//     );
-
-//     const userResponse = {
-//       id: user._id,
-//       username: user.username,
-//       email: user.email,
-//       role: user.role,
-//       bloodGroup: user.bloodGroup,
-//       phone: user.phone,
-//       location: user.location
-//     };
-
-//     res.json({
-//       success: true,
-//       token,
-//       user: userResponse
-//     });
-//   } catch (err) {
-//     console.error('Login error:', err);
-//     res.status(500).json({ success: false, message: 'Server error during login' });
-//   }
-// };
-
 // controllers/authController.js
 import User from '../models/user.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import nodemailer from 'nodemailer';
 
+// ── Helper: Generate JWT ────────────────────────────────────────────────
+const generateToken = (id) => {
+  return jwt.sign({ id }, process.env.JWT_SECRET, {
+    expiresIn: '30d',
+  });
+};
+
+// ── Signup User ─────────────────────────────────────────────────────────
 export const signupUser = async (req, res) => {
-  const { username, email, password, bloodGroup, phone, location, role } = req.body;
-
-  // Validate role
-  if (!['donor', 'receiver', 'hospital'].includes(role)) {
-    return res.status(400).json({ success: false, message: 'Invalid role' });
-  }
-
-  // Validate required fields
-  if (!username || !email || !password || !location) {
-    return res.status(400).json({ success: false, message: 'Required fields missing' });
-  }
-
-  // Validate bloodGroup for donor/receiver
-  if ((role === 'donor' || role === 'receiver') && !bloodGroup) {
-    return res.status(400).json({ success: false, message: 'Blood group required' });
-  }
+  const { username, email, password, phone, bloodGroup, role = 'receiver' } = req.body;
 
   try {
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({ success: false, message: 'Email already exists' });
+    // Validation
+    if (!username || !email || !password || !phone || !bloodGroup) {
+      return res.status(400).json({ success: false, message: 'All fields are required' });
     }
 
-    // OPTIMIZED: Smart bcrypt rounds - 6 in dev (fast), 10 in production (secure)
-    const rounds = process.env.NODE_ENV === 'production' ? 10 : 6;
-    const hashedPassword = await bcrypt.hash(password, rounds);
+    // Check if user already exists
+    const userExists = await User.findOne({ $or: [{ email }, { phone }] });
+    if (userExists) {
+      return res.status(400).json({
+        success: false,
+        message: 'User with this email or phone already exists',
+      });
+    }
 
-    const newUser = await User.create({
+    // Hash password
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+
+    // Create user
+    const user = await User.create({
       username,
       email,
       password: hashedPassword,
-      bloodGroup: role !== 'hospital' ? bloodGroup : undefined,
-      phone: phone || '',
-      location,
-      role
+      phone,
+      bloodGroup,
+      role,
     });
 
-    const token = jwt.sign(
-      { id: newUser._id, role: newUser.role },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-
-    const userResponse = {
-      id: newUser._id,
-      username: newUser.username,
-      email: newUser.email,
-      role: newUser.role,
-      bloodGroup: newUser.bloodGroup,
-      phone: newUser.phone,
-      location: newUser.location
-    };
-
-    res.status(201).json({
-      success: true,
-      token,
-      user: userResponse
-    });
-  } catch (err) {
-    console.error('Signup error:', err);
+    if (user) {
+      res.status(201).json({
+        success: true,
+        message: 'User registered successfully',
+        user: {
+          _id: user._id,
+          username: user.username,
+          email: user.email,
+          phone: user.phone,
+          bloodGroup: user.bloodGroup,
+          role: user.role,
+          token: generateToken(user._id),
+        },
+      });
+    } else {
+      res.status(400).json({ success: false, message: 'Invalid user data' });
+    }
+  } catch (error) {
+    console.error('Signup error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };
 
+// ── Login User ──────────────────────────────────────────────────────────
 export const loginUser = async (req, res) => {
   const { email, password } = req.body;
 
-  if (!email || !password) {
-    return res.status(400).json({ success: false, message: 'Email and password required' });
-  }
-
   try {
-    const user = await User.findOne({ email });
+    // Check for user email
+    const user = await User.findOne({ email }).select('+password');
     if (!user) {
-      return res.status(400).json({ success: false, message: 'Invalid credentials' });
+      return res.status(401).json({ success: false, message: 'Invalid email or password' });
     }
 
+    // Check password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      return res.status(400).json({ success: false, message: 'Invalid credentials' });
+      return res.status(401).json({ success: false, message: 'Invalid email or password' });
     }
 
-    const token = jwt.sign(
-      { id: user._id, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
+    res.status(200).json({
+      success: true,
+      message: 'Login successful',
+      user: {
+        _id: user._id,
+        username: user.username,
+        email: user.email,
+        phone: user.phone,
+        bloodGroup: user.bloodGroup,
+        role: user.role,
+        isAvailable: user.isAvailable,
+        avatar: user.avatar,
+        token: generateToken(user._id),
+      },
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+// ── Get Current User (GET /api/auth/me) ─────────────────────────────────
+export const getMe = async (req, res) => {
+  try {
+    // req.user is set by protect middleware
+    const user = await User.findById(req.user._id).select(
+      '-password -resetPasswordToken -resetPasswordExpire -__v'
     );
 
-    const userResponse = {
-      id: user._id,
-      username: user.username,
-      email: user.email,
-      role: user.role,
-      bloodGroup: user.bloodGroup,
-      phone: user.phone,
-      location: user.location
-    };
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
 
-    res.json({
+    res.status(200).json({
       success: true,
-      token,
-      user: userResponse
+      user,
     });
   } catch (err) {
-    console.error('Login error:', err);
-    res.status(500).json({ success: false, message: 'Server error' });
+    console.error('Get me error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+    });
+  }
+};
+
+// ── Update Profile (PATCH /api/auth/profile) ────────────────────────────
+export const updateProfile = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const updates = { ...req.body };
+
+    // Handle avatar upload (multer adds req.file)
+    if (req.file) {
+      updates.avatar = `/uploads/avatars/${req.file.filename}`;
+    }
+
+    // Optional: prevent changing role or email
+    delete updates.email;
+    delete updates.role;
+
+    // If changing password
+    if (updates.newPassword) {
+      if (!updates.currentPassword) {
+        return res.status(400).json({
+          success: false,
+          message: 'Current password is required to change password',
+        });
+      }
+
+      const user = await User.findById(userId).select('+password');
+      const isMatch = await bcrypt.compare(updates.currentPassword, user.password);
+
+      if (!isMatch) {
+        return res.status(400).json({
+          success: false,
+          message: 'Current password is incorrect',
+        });
+      }
+
+      const salt = await bcrypt.genSalt(10);
+      updates.password = await bcrypt.hash(updates.newPassword, salt);
+
+      // Remove temp fields
+      delete updates.currentPassword;
+      delete updates.newPassword;
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { $set: updates },
+      { new: true, runValidators: true }
+    ).select('-password -resetPasswordToken -resetPasswordExpire -__v');
+
+    if (!updatedUser) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found',
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Profile updated successfully',
+      user: updatedUser,
+    });
+  } catch (err) {
+    console.error('Update profile error:', err);
+    res.status(400).json({
+      success: false,
+      message: err.message || 'Failed to update profile',
+    });
   }
 };

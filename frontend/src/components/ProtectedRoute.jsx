@@ -1,27 +1,23 @@
 // src/components/ProtectedRoute.jsx
-import { Navigate } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
 
-const ProtectedRoute = ({ children, allowedRoles }) => {
-  const { user, loading } = useAuth();
+const ProtectedRoute = ({ allowedRoles = [] }) => {
+  const location = useLocation();
 
-  if (loading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="text-xl text-gray-600">Loading...</div>
-      </div>
-    );
+  // Check if user is authenticated (token exists)
+  const token = localStorage.getItem('token');
+  const isAuthenticated = !!token;
+
+  // If not logged in → redirect to login and save the intended destination
+  if (!isAuthenticated) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
-  if (!user) {
-    return <Navigate to="/login" replace />;
-  }
+  // Optional: You can add role check later if needed
+  // For now we allow all authenticated users to access protected routes
+  // (You can tighten this by checking user.role from context or localStorage)
 
-  if (allowedRoles && !allowedRoles.includes(user.role)) {
-    return <Navigate to="/" replace />;
-  }
-
-  return children;
+  return <Outlet />;
 };
 
 export default ProtectedRoute;

@@ -1,313 +1,191 @@
-import { useState } from 'react'
-import Navbar from '../components/Navbar'
-import Footer from '../components/Footer'
-import { bloodGroups } from '../data/dummyData'
+// src/pages/Profile.jsx
+import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import axios from 'axios';
+import { FaUser, FaHeartbeat, FaPhone, FaMapMarkerAlt, FaSave } from 'react-icons/fa';
 
-/**
- * Profile Page Component
- * Allows users to view and edit their profile, and change password
- */
-function Profile({ user, onUpdate, onLogout }) {
-  const [activeTab, setActiveTab] = useState('profile') // 'profile' or 'password'
-  const [profileData, setProfileData] = useState({
-    name: user.name || '',
-    email: user.email || '',
-    bloodGroup: user.bloodGroup || '',
-    phone: user.phone || '',
-    location: user.location || ''
-  })
-  const [passwordData, setPasswordData] = useState({
-    currentPassword: '',
-    newPassword: '',
-    confirmPassword: ''
-  })
-  const [message, setMessage] = useState({ type: '', text: '' })
+function Profile() {
+  const { user, setUser } = useAuth();
+  const navigate = useNavigate();
 
-  const handleProfileChange = (e) => {
-    setProfileData({
-      ...profileData,
-      [e.target.name]: e.target.value
-    })
-  }
+  const [formData, setFormData] = useState({
+    username: user?.username || '',
+    phone: user?.phone || '',
+    location: user?.location || '',
+    bloodGroup: user?.bloodGroup || '',
+  });
 
-  const handlePasswordChange = (e) => {
-    setPasswordData({
-      ...passwordData,
-      [e.target.name]: e.target.value
-    })
-  }
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
-  const handleProfileSubmit = (e) => {
-    e.preventDefault()
-    
-    // Update user data
-    const updatedUser = {
-      ...user,
-      ...profileData
+  const bloodGroups = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
+
+  useEffect(() => {
+    if (!user) {
+      navigate('/login');
     }
-    
-    onUpdate(updatedUser)
-    setMessage({ type: 'success', text: 'Profile updated successfully!' })
-    
-    // Clear message after 3 seconds
-    setTimeout(() => setMessage({ type: '', text: '' }), 3000)
-  }
+  }, [user, navigate]);
 
-  const handlePasswordSubmit = (e) => {
-    e.preventDefault()
-    setMessage({ type: '', text: '' })
+  const handleChange = (e) => {
+    setFormData({ ...formData, [e.target.name]: e.target.value });
+    setError('');
+    setSuccess('');
+  };
 
-    // Validation
-    if (!passwordData.currentPassword || !passwordData.newPassword || !passwordData.confirmPassword) {
-      setMessage({ type: 'error', text: 'Please fill in all fields' })
-      return
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setSuccess('');
+    setLoading(true);
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await axios.patch(
+        '/api/auth/profile', 
+        formData,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      if (res.data.success) {
+        setUser(res.data.user); // Update context
+        localStorage.setItem('user', JSON.stringify(res.data.user));
+        setSuccess('Profile updated successfully!');
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to update profile');
+    } finally {
+      setLoading(false);
     }
-
-    if (passwordData.newPassword !== passwordData.confirmPassword) {
-      setMessage({ type: 'error', text: 'New passwords do not match' })
-      return
-    }
-
-    if (passwordData.newPassword.length < 6) {
-      setMessage({ type: 'error', text: 'Password must be at least 6 characters' })
-      return
-    }
-
-    // In a real app, this would make an API call
-    setMessage({ type: 'success', text: 'Password changed successfully!' })
-    setPasswordData({
-      currentPassword: '',
-      newPassword: '',
-      confirmPassword: ''
-    })
-    
-    // Clear message after 3 seconds
-    setTimeout(() => setMessage({ type: '', text: '' }), 3000)
-  }
+  };
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <Navbar user={user} onLogout={onLogout} />
-      
-      <main className="flex-grow bg-gray-50 py-8">
-        <div className="container mx-auto px-4 max-w-4xl">
-          <h1 className="text-3xl font-bold text-red-600 mb-8">My Profile</h1>
+    <div className="min-h-screen bg-gradient-to-b from-red-50 via-white to-white py-12 px-4">
+      <div className="max-w-2xl mx-auto bg-white rounded-3xl shadow-xl border border-red-100 p-8 lg:p-10">
+        <div className="text-center mb-10">
+          <div className="w-24 h-24 mx-auto rounded-full bg-red-100 flex items-center justify-center mb-4">
+            <FaUser className="text-5xl text-red-600" />
+          </div>
+          <h1 className="text-3xl font-bold text-gray-900">Your Profile</h1>
+          <p className="text-gray-600 mt-2">Update your details to help us match you better</p>
+        </div>
 
-          {/* Tabs */}
-          <div className="bg-white rounded-lg shadow-md mb-6">
-            <div className="flex border-b border-gray-200">
-              <button
-                onClick={() => setActiveTab('profile')}
-                className={`flex-1 py-4 px-6 text-center font-medium transition ${
-                  activeTab === 'profile'
-                    ? 'text-red-600 border-b-2 border-red-600'
-                    : 'text-gray-600 hover:text-gray-800'
-                }`}
-              >
-                Profile Information
-              </button>
-              <button
-                onClick={() => setActiveTab('password')}
-                className={`flex-1 py-4 px-6 text-center font-medium transition ${
-                  activeTab === 'password'
-                    ? 'text-red-600 border-b-2 border-red-600'
-                    : 'text-gray-600 hover:text-gray-800'
-                }`}
-              >
-                Change Password
-              </button>
+        {error && (
+          <div className="mb-6 p-4 bg-red-50 border-l-4 border-red-500 text-red-700 rounded-r-xl">
+            {error}
+          </div>
+        )}
+
+        {success && (
+          <div className="mb-6 p-4 bg-green-50 border-l-4 border-green-500 text-green-700 rounded-r-xl">
+            {success}
+          </div>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Username (read-only or editable) */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Username
+            </label>
+            <input
+              type="text"
+              name="username"
+              value={formData.username}
+              onChange={handleChange}
+              className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none bg-gray-50"
+              disabled // Optional: make username read-only
+            />
+          </div>
+
+          {/* Phone */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Phone Number
+            </label>
+            <div className="relative">
+              <FaPhone className="absolute left-4 top-1/2 -translate-y-1/2 text-red-500" />
+              <input
+                type="tel"
+                name="phone"
+                value={formData.phone}
+                onChange={handleChange}
+                placeholder="98XXXXXXXX"
+                className="w-full pl-12 px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none"
+              />
             </div>
           </div>
 
-          {/* Message Display */}
-          {message.text && (
-            <div
-              className={`mb-4 px-4 py-3 rounded ${
-                message.type === 'success'
-                  ? 'bg-green-100 border border-green-400 text-green-700'
-                  : 'bg-red-100 border border-red-400 text-red-700'
-              }`}
+          {/* Location */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Location (City/District)
+            </label>
+            <div className="relative">
+              <FaMapMarkerAlt className="absolute left-4 top-1/2 -translate-y-1/2 text-red-500" />
+              <input
+                type="text"
+                name="location"
+                value={formData.location}
+                onChange={handleChange}
+                placeholder="e.g. Kathmandu, Lalitpur"
+                className="w-full pl-12 px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none"
+              />
+            </div>
+          </div>
+
+          {/* Blood Group – Most Important Field */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Blood Group <span className="text-red-600">*</span>
+            </label>
+            <select
+              name="bloodGroup"
+              value={formData.bloodGroup}
+              onChange={handleChange}
+              required
+              className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none bg-white"
             >
-              {message.text}
-            </div>
-          )}
+              <option value="">Select your blood group</option>
+              {bloodGroups.map((bg) => (
+                <option key={bg} value={bg}>
+                  {bg}
+                </option>
+              ))}
+            </select>
+          </div>
 
-          {/* Profile Tab */}
-          {activeTab === 'profile' && (
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h2 className="text-2xl font-semibold mb-6">Edit Profile</h2>
-              
-              <form onSubmit={handleProfileSubmit} className="space-y-4">
-                <div className="grid md:grid-cols-2 gap-4">
-                  <div>
-                    <label htmlFor="name" className="block text-gray-700 font-medium mb-2">
-                      Full Name *
-                    </label>
-                    <input
-                      type="text"
-                      id="name"
-                      name="name"
-                      value={profileData.name}
-                      onChange={handleProfileChange}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                      required
-                    />
-                  </div>
+          {/* Submit */}
+          <button
+            type="submit"
+            disabled={loading}
+            className={`w-full py-4 px-8 bg-gradient-to-r from-red-600 to-rose-600 text-white font-bold text-lg rounded-xl shadow-xl hover:shadow-2xl transition-all flex items-center justify-center gap-3 disabled:opacity-60 ${
+              loading ? 'cursor-not-allowed' : 'hover:scale-[1.02]'
+            }`}
+          >
+            {loading ? (
+              <>
+                <svg className="animate-spin h-6 w-6 text-white" viewBox="0 0 24 24">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                </svg>
+                Saving...
+              </>
+            ) : (
+              <>
+                <FaSave className="text-xl" />
+                Save Profile
+              </>
+            )}
+          </button>
+        </form>
 
-                  <div>
-                    <label htmlFor="email" className="block text-gray-700 font-medium mb-2">
-                      Email *
-                    </label>
-                    <input
-                      type="email"
-                      id="email"
-                      name="email"
-                      value={profileData.email}
-                      onChange={handleProfileChange}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                      required
-                    />
-                  </div>
-                </div>
-
-                {(user.role === 'donor' || user.role === 'receiver') && (
-                  <div>
-                    <label htmlFor="bloodGroup" className="block text-gray-700 font-medium mb-2">
-                      Blood Group *
-                    </label>
-                    <select
-                      id="bloodGroup"
-                      name="bloodGroup"
-                      value={profileData.bloodGroup}
-                      onChange={handleProfileChange}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                      required
-                    >
-                      <option value="">Select Blood Group</option>
-                      {bloodGroups.map((bg) => (
-                        <option key={bg} value={bg}>
-                          {bg}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-
-                <div className="grid md:grid-cols-2 gap-4">
-                  <div>
-                    <label htmlFor="phone" className="block text-gray-700 font-medium mb-2">
-                      Phone Number
-                    </label>
-                    <input
-                      type="tel"
-                      id="phone"
-                      name="phone"
-                      value={profileData.phone}
-                      onChange={handleProfileChange}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label htmlFor="location" className="block text-gray-700 font-medium mb-2">
-                      Location
-                    </label>
-                    <input
-                      type="text"
-                      id="location"
-                      name="location"
-                      value={profileData.location}
-                      onChange={handleProfileChange}
-                      placeholder="City, State"
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                    />
-                  </div>
-                </div>
-
-                <div className="pt-4">
-                  <button
-                    type="submit"
-                    className="bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-6 rounded-lg transition"
-                  >
-                    Update Profile
-                  </button>
-                </div>
-              </form>
-            </div>
-          )}
-
-          {/* Password Tab */}
-          {activeTab === 'password' && (
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h2 className="text-2xl font-semibold mb-6">Change Password</h2>
-              
-              <form onSubmit={handlePasswordSubmit} className="space-y-4 max-w-md">
-                <div>
-                  <label htmlFor="currentPassword" className="block text-gray-700 font-medium mb-2">
-                    Current Password *
-                  </label>
-                  <input
-                    type="password"
-                    id="currentPassword"
-                    name="currentPassword"
-                    value={passwordData.currentPassword}
-                    onChange={handlePasswordChange}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label htmlFor="newPassword" className="block text-gray-700 font-medium mb-2">
-                    New Password *
-                  </label>
-                  <input
-                    type="password"
-                    id="newPassword"
-                    name="newPassword"
-                    value={passwordData.newPassword}
-                    onChange={handlePasswordChange}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                    required
-                  />
-                  <p className="text-sm text-gray-500 mt-1">
-                    Password must be at least 6 characters long
-                  </p>
-                </div>
-
-                <div>
-                  <label htmlFor="confirmPassword" className="block text-gray-700 font-medium mb-2">
-                    Confirm New Password *
-                  </label>
-                  <input
-                    type="password"
-                    id="confirmPassword"
-                    name="confirmPassword"
-                    value={passwordData.confirmPassword}
-                    onChange={handlePasswordChange}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"
-                    required
-                  />
-                </div>
-
-                <div className="pt-4">
-                  <button
-                    type="submit"
-                    className="bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-6 rounded-lg transition"
-                  >
-                    Change Password
-                  </button>
-                </div>
-              </form>
-            </div>
-          )}
+        <div className="mt-10 text-center text-sm text-gray-500">
+          Updating your blood group helps donors find you faster in emergencies.
         </div>
-      </main>
-
-      <Footer />
+      </div>
     </div>
-  )
+  );
 }
 
-export default Profile
-
+export default Profile;
