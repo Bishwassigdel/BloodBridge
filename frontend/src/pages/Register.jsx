@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { FaHeartbeat, FaEnvelope, FaLock, FaPhone, FaMapMarkerAlt, FaUser, FaEye, FaEyeSlash } from 'react-icons/fa';
 
 const Register = () => {
-  const [isHospital, setIsHospital] = useState(false);
+  const [isOrganization, setIsOrganization] = useState(false);
   const [formData, setFormData] = useState({
     username: '',
     email: '',
@@ -13,7 +13,7 @@ const Register = () => {
     confirmPassword: '',
     phone: '',
     bloodGroup: '',
-    location: ''
+    location: '',
   });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -25,31 +25,56 @@ const Register = () => {
 
   const bloodGroups = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
 
-  const handleChange = (e) => setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value }));
+    setError(''); // Clear error on change
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setLoading(true);
 
+    // Manual validation (no native HTML5 interference)
     if (formData.password !== formData.confirmPassword) {
       setError("Passwords don't match");
       setLoading(false);
       return;
     }
-    if (!formData.username || !formData.email || !formData.location) {
-      setError('Please fill all required fields');
+
+    if (!formData.username.trim()) {
+      setError('Name / Organization name is required');
       setLoading(false);
       return;
     }
-    if (!isHospital && !formData.bloodGroup) {
-      setError('Blood group is required');
+
+    if (!formData.email.trim()) {
+      setError('Email is required');
+      setLoading(false);
+      return;
+    }
+
+    if (!formData.location.trim()) {
+      setError('Location / Address is required');
+      setLoading(false);
+      return;
+    }
+
+    if (!isOrganization && !formData.bloodGroup) {
+      setError('Blood group is required for Donor/Receiver');
+      setLoading(false);
+      return;
+    }
+
+    if (isOrganization && !formData.username.trim()) {
+      setError('Organization name is required');
       setLoading(false);
       return;
     }
 
     try {
-      const userRole = isHospital ? 'hospital' : formData.bloodGroup ? 'donor' : 'receiver';
+      const userRole = isOrganization ? 'hospital' : formData.bloodGroup ? 'donor' : 'receiver';
 
       const submitData = {
         username: formData.username.trim(),
@@ -58,8 +83,10 @@ const Register = () => {
         location: formData.location.trim(),
         phone: formData.phone?.trim() || '',
         bloodGroup: formData.bloodGroup || '',
-        role: userRole
+        role: userRole,
       };
+
+      console.log('Sending to backend:', submitData); // Debug
 
       const registeredUser = await signup(submitData);
 
@@ -69,7 +96,8 @@ const Register = () => {
         navigate('/hospital/dashboard');
       }
     } catch (err) {
-      setError(err.message || 'Registration failed');
+      console.error('Signup error:', err.response?.data || err);
+      setError(err.response?.data?.message || 'Registration failed. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -78,14 +106,14 @@ const Register = () => {
   return (
     <div className="min-h-screen bg-gradient-to-br from-red-50 via-rose-50 to-white flex items-center justify-center px-4 py-8">
       <div className="w-full max-w-4xl bg-white/90 backdrop-blur-md rounded-3xl shadow-2xl border border-red-100/50 p-6 lg:p-10 animate-fade-in">
-        {/* Header - Compact */}
+        {/* Header */}
         <div className="text-center mb-8">
           <FaHeartbeat className="text-red-600 text-6xl mx-auto mb-4 animate-heartbeat" />
           <h2 className="text-3xl lg:text-4xl font-extrabold text-gray-900 tracking-tight mb-1">
-            {isHospital ? 'Organization Registration' : 'Join BloodBridge'}
+            {isOrganization ? 'Organization Registration' : 'Join BloodBridge'}
           </h2>
           <p className="text-gray-600 text-base lg:text-lg">
-            {isHospital ? 'Connect your hospital' : 'Become a lifesaver today'}
+            {isOrganization ? 'Register your organization to connect with donors' : 'Become a lifesaver today'}
           </p>
         </div>
 
@@ -96,13 +124,13 @@ const Register = () => {
           </div>
         )}
 
-        {/* Horizontal Role Toggle */}
+        {/* Role Toggle */}
         <div className="mb-8 flex flex-row gap-4 justify-center">
           <button
             type="button"
-            onClick={() => setIsHospital(false)}
+            onClick={() => setIsOrganization(false)}
             className={`flex-1 py-4 px-6 rounded-2xl font-semibold text-base lg:text-lg transition-all duration-300 shadow-md ${
-              !isHospital 
+              !isOrganization 
                 ? 'bg-gradient-to-r from-red-600 to-rose-600 text-white scale-105' 
                 : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
             }`}
@@ -111,9 +139,9 @@ const Register = () => {
           </button>
           <button
             type="button"
-            onClick={() => setIsHospital(true)}
+            onClick={() => setIsOrganization(true)}
             className={`flex-1 py-4 px-6 rounded-2xl font-semibold text-base lg:text-lg transition-all duration-300 shadow-md ${
-              isHospital 
+              isOrganization 
                 ? 'bg-gradient-to-r from-red-600 to-rose-600 text-white scale-105' 
                 : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
             }`}
@@ -122,23 +150,23 @@ const Register = () => {
           </button>
         </div>
 
-        {/* Form - Horizontal grid on larger screens */}
-        <form onSubmit={handleSubmit} className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Username / Org Name */}
+        {/* Form - added noValidate to disable native browser validation */}
+        <form onSubmit={handleSubmit} noValidate className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Name / Organization Name */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              {isHospital ? 'Organization Name' : 'Full Name'} *
+              {isOrganization ? 'Organization Name *' : 'Full Name *'}
             </label>
             <div className="relative">
               <FaUser className="absolute left-4 top-1/2 -translate-y-1/2 text-red-500 text-xl" />
               <input
                 type="text"
                 name="username"
-                placeholder={isHospital ? 'Hospital / Organization Name' : 'Your Full Name'}
-                required
+                placeholder={isOrganization ? 'Organization Name' : 'Your Full Name'}
                 value={formData.username}
                 onChange={handleChange}
                 className="w-full pl-12 pr-5 py-4 rounded-xl border border-red-200 focus:border-red-500 focus:ring-4 focus:ring-red-100 outline-none transition-all bg-white/70 text-gray-900 text-base"
+                key={isOrganization ? 'org-name' : 'user-name'} // Force re-render on toggle
               />
             </div>
           </div>
@@ -152,7 +180,6 @@ const Register = () => {
                 type="email"
                 name="email"
                 placeholder="you@example.com"
-                required
                 value={formData.email}
                 onChange={handleChange}
                 className="w-full pl-12 pr-5 py-4 rounded-xl border border-red-200 focus:border-red-500 focus:ring-4 focus:ring-red-100 outline-none transition-all bg-white/70 text-gray-900 text-base"
@@ -160,15 +187,14 @@ const Register = () => {
             </div>
           </div>
 
-          {/* Blood Group - only non-hospital */}
-          {!isHospital && (
+          {/* Blood Group - only for non-organization */}
+          {!isOrganization && (
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Blood Group *</label>
               <select
                 name="bloodGroup"
                 value={formData.bloodGroup}
                 onChange={handleChange}
-                required
                 className="w-full px-5 py-4 rounded-xl border border-red-200 focus:border-red-500 focus:ring-4 focus:ring-red-100 outline-none transition-all bg-white/70 text-gray-900 text-base"
               >
                 <option value="">Select Blood Group</option>
@@ -182,15 +208,14 @@ const Register = () => {
           {/* Location */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              {isHospital ? 'Organization Address' : 'City / District'} *
+              {isOrganization ? 'Organization Address *' : 'City / District *'}
             </label>
             <div className="relative">
               <FaMapMarkerAlt className="absolute left-4 top-1/2 -translate-y-1/2 text-red-500 text-xl" />
               <input
                 type="text"
                 name="location"
-                placeholder={isHospital ? 'Full address of organization' : 'Your city or district'}
-                required
+                placeholder={isOrganization ? 'Full organization address' : 'Your city or district'}
                 value={formData.location}
                 onChange={handleChange}
                 className="w-full pl-12 pr-5 py-4 rounded-xl border border-red-200 focus:border-red-500 focus:ring-4 focus:ring-red-100 outline-none transition-all bg-white/70 text-gray-900 text-base"
@@ -201,15 +226,14 @@ const Register = () => {
           {/* Phone */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
-              {isHospital ? 'Contact Phone *' : 'Phone Number (optional)'}
+              {isOrganization ? 'Organization Contact Phone *' : 'Phone Number (optional)'}
             </label>
             <div className="relative">
               <FaPhone className="absolute left-4 top-1/2 -translate-y-1/2 text-red-500 text-xl" />
               <input
                 type="tel"
                 name="phone"
-                placeholder={isHospital ? 'Organization contact number' : 'Your phone (optional)'}
-                required={isHospital}
+                placeholder={isOrganization ? 'Organization contact number' : 'Your phone (optional)'}
                 value={formData.phone}
                 onChange={handleChange}
                 className="w-full pl-12 pr-5 py-4 rounded-xl border border-red-200 focus:border-red-500 focus:ring-4 focus:ring-red-100 outline-none transition-all bg-white/70 text-gray-900 text-base"
@@ -266,7 +290,7 @@ const Register = () => {
             </div>
           </div>
 
-          {/* Submit Button - Full width */}
+          {/* Submit Button */}
           <div className="col-span-1 lg:col-span-2">
             <button
               type="submit"
@@ -283,7 +307,7 @@ const Register = () => {
                   Creating Account...
                 </>
               ) : (
-                isHospital ? 'Register Organization' : 'Register Now'
+                isOrganization ? 'Register Organization' : 'Register Now'
               )}
             </button>
           </div>

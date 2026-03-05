@@ -4,7 +4,6 @@ import axios from 'axios';
 
 const AuthContext = createContext();
 
-// Named export for the custom hook – THIS is what Home.jsx is trying to import
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {
@@ -13,15 +12,15 @@ export const useAuth = () => {
   return context;
 };
 
-// Named export for the provider component
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  axios.defaults.baseURL = 'http://localhost:3001';
+  // Use environment variable for API base URL (important for production)
+  axios.defaults.baseURL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
   axios.defaults.headers.post['Content-Type'] = 'application/json';
 
-  // Attach token to every request automatically
+  // Attach token to every request + handle 401 logout
   useEffect(() => {
     const requestInterceptor = axios.interceptors.request.use(
       (config) => {
@@ -50,6 +49,7 @@ export const AuthProvider = ({ children }) => {
     };
   }, []);
 
+  // Load user on mount
   useEffect(() => {
     const loadUser = async () => {
       const token = localStorage.getItem('token');
@@ -79,7 +79,7 @@ export const AuthProvider = ({ children }) => {
     try {
       const res = await axios.post('/api/auth/login', { email, password });
       if (res.data.success) {
-        const token = res.data.user.token;           // ← correct path
+        const token = res.data.token; // FIXED: token is at root level, not res.data.user.token
         localStorage.setItem('token', token);
         localStorage.setItem('user', JSON.stringify(res.data.user));
         setUser(res.data.user);
@@ -95,7 +95,7 @@ export const AuthProvider = ({ children }) => {
     try {
       const res = await axios.post('/api/auth/signup', data);
       if (res.data.success) {
-        const token = res.data.user.token;           // ← correct path
+        const token = res.data.token; // FIXED: token is at root level
         localStorage.setItem('token', token);
         localStorage.setItem('user', JSON.stringify(res.data.user));
         setUser(res.data.user);
@@ -103,7 +103,12 @@ export const AuthProvider = ({ children }) => {
       }
       throw new Error(res.data.message || 'Signup failed');
     } catch (err) {
-      throw new Error(err.response?.data?.message || 'Signup failed');
+      console.error('Signup frontend error:', err);
+      throw new Error(
+        err.response?.data?.message || 
+        err.message || 
+        'Signup failed - please try again'
+      );
     }
   };
 
