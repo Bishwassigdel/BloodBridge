@@ -4,9 +4,12 @@ const userSchema = new mongoose.Schema({
   username: { type: String, required: true },
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
-  bloodGroup: { type: String, enum: ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'] },
+  bloodGroup: { 
+    type: String, 
+    enum: ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'] 
+  },
   phone: { type: String },
-  location: { type: String, required: true },
+  location: { type: String },           // ← changed: removed required: true
   role: { 
     type: String, 
     enum: ['donor', 'receiver', 'hospital'], 
@@ -15,6 +18,14 @@ const userSchema = new mongoose.Schema({
   isAvailable: { type: Boolean, default: true },
   lastDonation: Date,
   hospitalName: String,
+
+  // Added fields for profile edit
+  avatar: { type: String, default: null },                     
+  address: { type: String, default: '' },
+  emergencyContact: {
+    name: { type: String, default: '' },
+    phone: { type: String, default: '' }
+  },
 
   // Forgot/Reset Password fields
   resetPasswordToken: String,
