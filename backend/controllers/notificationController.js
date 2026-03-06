@@ -3,19 +3,19 @@ import Notification from '../models/Notification.js';
 export const getNotifications = async (req, res) => {
   try {
     const notifications = await Notification.find({ user: req.user._id })
-      .sort({ createdAt: -1 }) // newest first
-      .limit(20)
-      .populate({
-        path: 'data.requestId',
-        select: 'hospital bloodGroup units status urgency location contactPhone note',
-        model: 'BloodRequest',
-      })
+      .sort({ createdAt: -1 })           // newest first
+      .limit(30)
       .lean();
+
+    const unreadCount = await Notification.countDocuments({
+      user: req.user._id,
+      read: false
+    });
 
     res.status(200).json({
       success: true,
       count: notifications.length,
-      unreadCount: notifications.filter(n => !n.read).length,
+      unreadCount,
       notifications,
     });
   } catch (err) {
@@ -27,7 +27,11 @@ export const getNotifications = async (req, res) => {
 export const markAsRead = async (req, res) => {
   try {
     const notification = await Notification.findById(req.params.id);
-    if (!notification) return res.status(404).json({ success: false, message: 'Notification not found' });
+    
+    if (!notification) {
+      return res.status(404).json({ success: false, message: 'Notification not found' });
+    }
+    
     if (notification.user.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: 'Not authorized' });
     }
