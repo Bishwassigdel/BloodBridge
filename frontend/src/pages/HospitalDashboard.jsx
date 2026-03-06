@@ -1,13 +1,13 @@
 // src/pages/HospitalDashboard.jsx
 import { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
 import {
   FaHeartbeat,
   FaClipboardList,
   FaUsers,
   FaHistory,
   FaSignOutAlt,
-  FaHospital,
   FaBars,
   FaTimes,
   FaBell,
@@ -15,58 +15,81 @@ import {
   FaExclamationTriangle,
   FaSpinner,
   FaRedo,
+  FaExclamationCircle,
 } from 'react-icons/fa';
-import axios from 'axios';
+import { useAuth } from '../context/AuthContext';
 
-function HospitalDashboard({ user }) {
+function HospitalDashboard() {
   const navigate = useNavigate();
+  const { user, logout } = useAuth();
 
   const [activePanel, setActivePanel] = useState('inventory');
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
-  // Inventory from backend
   const [inventory, setInventory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Bulk update form
   const [selectedGroup, setSelectedGroup] = useState('');
   const [updateUnits, setUpdateUnits] = useState('');
+  const [updateReason, setUpdateReason] = useState('');
+  const [expiryDate, setExpiryDate] = useState('');
+
+  const [logs, setLogs] = useState([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+
+  const token = localStorage.getItem('token');
 
   const handleLogout = () => {
-    localStorage.clear();
+    logout();
     navigate('/', { replace: true });
   };
 
-  // Fetch inventory
-  useEffect(() => {
-    const fetchInventory = async () => {
-      try {
-        const token = localStorage.getItem('token');
-        if (!token) throw new Error('No token found. Please login.');
-
-        const res = await axios.get('/api/blood/inventory', {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-
-        if (res.data.success) {
-          setInventory(res.data.inventory || []);
-        } else {
-          setError(res.data.message || 'Failed to load inventory');
-        }
-      } catch (err) {
-        setError(err.response?.data?.message || 'Error loading inventory');
-      } finally {
-        setLoading(false);
+  const fetchInventory = async () => {
+    try {
+      const res = await axios.get('/api/blood/inventory', {
+        headers: { 'x-auth-token': token },
+      });
+      if (res.data.success) {
+        setInventory(res.data.inventory || []);
+      } else {
+        setError(res.data.message || 'Failed to load inventory');
       }
-    };
+    } catch (err) {
+      setError(err.response?.data?.message || 'Error loading inventory');
+    } finally {
+      setLoading(false);
+    }
+  };
 
+  const fetchLogs = async () => {
+    setLogsLoading(true);
+    try {
+      const res = await axios.get('/api/blood/inventory-logs', {
+        headers: { 'x-auth-token': token },
+      });
+      if (res.data.success) {
+        setLogs(res.data.logs || []);
+      }
+    } catch (err) {
+      console.error('Logs fetch failed', err);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
+  useEffect(() => {
     if (user?.role === 'hospital') {
       fetchInventory();
     }
-  }, [user]);
+  }, [user, token]);
 
-  // Update inventory
+  useEffect(() => {
+    if (activePanel === 'history') {
+      fetchLogs();
+    }
+  }, [activePanel, token]);
+
   const handleUpdateInventory = async (bloodGroup, units, action) => {
     if (!bloodGroup || units <= 0) return;
 
@@ -75,16 +98,24 @@ function HospitalDashboard({ user }) {
     }
 
     try {
-      await axios.post('/api/blood/inventory', { bloodGroup, units, action });
+      await axios.post('/api/blood/inventory', {
+        bloodGroup,
+        units,
+        action,
+        reason: updateReason || undefined,
+        expiryDate: action === 'add' && expiryDate ? expiryDate : undefined,
+      }, {
+        headers: { 'x-auth-token': token },
+      });
 
-      // Refresh
-      const res = await axios.get('/api/blood/inventory');
-      setInventory(res.data.inventory || []);
+      await fetchInventory();
 
       alert(`Successfully ${action}ed ${units} units of ${bloodGroup}`);
 
       setSelectedGroup('');
       setUpdateUnits('');
+      setUpdateReason('');
+      setExpiryDate('');
     } catch (err) {
       alert(err.response?.data?.message || 'Update failed');
     }
@@ -96,11 +127,13 @@ function HospitalDashboard({ user }) {
     return { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-800', badge: 'bg-red-100 animate-pulse' };
   };
 
-  const unreadCount = 0; // Replace with real data later
+  const isNearExpiry = (date) => {
+    if (!date) return false;
+    return new Date(date) < new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-red-50 via-rose-50 to-white flex">
-      {/* Mobile toggle */}
       <button
         className="md:hidden fixed top-5 left-5 z-50 p-3 bg-white rounded-full shadow-lg hover:bg-red-50 transition"
         onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -108,7 +141,6 @@ function HospitalDashboard({ user }) {
         {sidebarOpen ? <FaTimes className="text-2xl text-red-600" /> : <FaBars className="text-2xl text-red-600" />}
       </button>
 
-      {/* Sidebar - same as donor/receiver */}
       <aside
         className={`fixed inset-y-0 left-0 z-40 w-72 bg-white/95 backdrop-blur-xl shadow-2xl transform ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
@@ -135,7 +167,7 @@ function HospitalDashboard({ user }) {
             { key: 'donors', icon: FaUsers, label: 'Donor Network' },
             { key: 'requests', icon: FaClipboardList, label: 'Blood Requests' },
             { key: 'history', icon: FaHistory, label: 'Activity Log' },
-            { key: 'notifications', icon: FaBell, label: 'Notifications', badge: unreadCount },
+            { key: 'notifications', icon: FaBell, label: 'Notifications' },
           ].map((item) => (
             <button
               key={item.key}
@@ -153,11 +185,6 @@ function HospitalDashboard({ user }) {
                 <item.icon className="text-2xl" />
                 <span className="text-lg">{item.label}</span>
               </div>
-              {item.badge > 0 && (
-                <span className="bg-red-600 text-white text-xs px-3 py-1 rounded-full animate-pulse">
-                  {item.badge}
-                </span>
-              )}
             </button>
           ))}
 
@@ -165,15 +192,14 @@ function HospitalDashboard({ user }) {
 
           <button
             onClick={handleLogout}
-            className="w-full flex items-center gap-4 px-6 py-4 rounded-2xl text-red-600 hover:bg-red-50 transition-all duration-300"
+            className="w-full flex items-center gap-4 px-6 py-4 rounded-2xl text-red-600 hover:bg-red-50 transition-all duration-300 font-medium"
           >
             <FaSignOutAlt className="text-2xl" />
-            <span className="text-lg font-medium">Logout</span>
+            <span className="text-lg">Logout</span>
           </button>
         </nav>
       </aside>
 
-      {/* Main content */}
       <main className="flex-1 md:ml-72 p-6 md:p-10 pt-24 md:pt-10">
         {error && (
           <div className="mb-10 p-8 bg-red-50 border-l-6 border-red-500 rounded-3xl shadow-xl">
@@ -202,12 +228,11 @@ function HospitalDashboard({ user }) {
         ) : (
           <div className="space-y-12">
             <h2 className="text-4xl md:text-5xl font-extrabold text-gray-900">
-              Welcome back, <span className="text-red-600">{user?.hospitalName || 'Hospital'}</span>
+              Welcome back, <span className="text-red-600">{user?.hospitalName || user?.username || 'Hospital'}</span>
             </h2>
 
             {activePanel === 'inventory' && (
               <div className="space-y-12">
-                {/* Summary Stats */}
                 <div className="grid md:grid-cols-3 gap-8">
                   <div className="bg-white p-8 rounded-3xl shadow-xl border border-red-100 hover:shadow-2xl transition-all duration-300">
                     <h3 className="text-xl font-semibold text-gray-700 mb-4">Total Units</h3>
@@ -234,28 +259,47 @@ function HospitalDashboard({ user }) {
                   </div>
                 </div>
 
-                {/* Inventory Cards */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
-                  {['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'].map((group) => {
+                  {['O-', 'O+', 'A-', 'A+', 'B-', 'B+', 'AB-', 'AB+'].map((group) => {
                     const item = inventory.find(i => i.bloodGroup === group) || { units: 0 };
                     const { bg, border, text, badge } = getStatusStyle(item.units);
+                    const nearExpiry = isNearExpiry(item.earliestExpiryDate);
 
                     return (
                       <div
                         key={group}
-                        className={`p-8 rounded-3xl shadow-xl border ${bg} ${border} hover:shadow-2xl hover:scale-[1.02] transition-all duration-300`}
+                        className={`p-8 rounded-3xl shadow-xl border ${bg} ${border} hover:shadow-2xl hover:scale-[1.02] transition-all duration-300 ${nearExpiry ? 'ring-2 ring-orange-500 ring-offset-2 animate-pulse-slow' : ''}`}
                       >
-                        <div className="flex justify-between items-center mb-6">
+                        <div className="flex justify-between items-center mb-4">
                           <h4 className="text-3xl font-extrabold text-gray-900">{group}</h4>
-                          <span className={`px-6 py-2 rounded-full text-base font-semibold ${badge}`}>
+                          <span className={`px-4 py-1 rounded-full text-sm font-semibold ${badge}`}>
                             {item.units >= 10 ? 'Good' : item.units >= 1 ? 'Low' : 'Critical'}
                           </span>
                         </div>
 
-                        <p className={`text-6xl font-extrabold mb-4 ${text}`}>
+                        <p className={`text-6xl font-extrabold mb-2 ${text}`}>
                           {item.units}
                         </p>
-                        <p className="text-lg text-gray-600 mb-8">Units Available</p>
+                        <p className="text-lg text-gray-600 mb-4">Units Available</p>
+
+                        {item.earliestExpiryDate && (
+                          <div className="mb-6">
+                            <p className="text-sm text-gray-700 mb-1">
+                              Earliest expiry: <span className={nearExpiry ? 'text-orange-700 font-bold' : 'font-medium'}>
+                                {new Date(item.earliestExpiryDate).toLocaleDateString()}
+                              </span>
+                            </p>
+                            {nearExpiry && (
+                              <span className="inline-block px-4 py-1 bg-orange-100 text-orange-800 rounded-full text-sm font-medium animate-pulse">
+                                Expires soon – use first!
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        <p className="text-xs text-gray-500 italic mb-6">
+                          Use oldest units first to prevent wastage
+                        </p>
 
                         <div className="flex gap-4">
                           <button
@@ -281,14 +325,13 @@ function HospitalDashboard({ user }) {
                   })}
                 </div>
 
-                {/* Bulk Update */}
                 <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-10">
                   <h3 className="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-4">
                     <FaTint className="text-red-600 text-4xl" />
                     Bulk Inventory Update
                   </h3>
 
-                  <div className="grid md:grid-cols-4 gap-6">
+                  <div className="grid md:grid-cols-5 gap-6">
                     <select
                       value={selectedGroup || ''}
                       onChange={(e) => setSelectedGroup(e.target.value)}
@@ -309,35 +352,115 @@ function HospitalDashboard({ user }) {
                       className="p-5 border border-red-200 rounded-2xl focus:ring-4 focus:ring-red-100 outline-none text-lg bg-white/70"
                     />
 
-                    <button
-                      onClick={() => {
-                        if (selectedGroup && updateUnits > 0) {
-                          handleUpdateInventory(selectedGroup, updateUnits, 'add');
-                        }
-                      }}
-                      disabled={!selectedGroup || updateUnits <= 0}
-                      className="py-5 px-10 bg-green-600 text-white font-bold rounded-2xl hover:bg-green-700 disabled:opacity-60 transition shadow-lg hover:shadow-xl text-lg"
-                    >
-                      Add Units
-                    </button>
+                    <input
+                      type="date"
+                      value={expiryDate}
+                      onChange={(e) => setExpiryDate(e.target.value)}
+                      className="p-5 border border-red-200 rounded-2xl focus:ring-4 focus:ring-red-100 outline-none text-lg bg-white/70"
+                    />
 
-                    <button
-                      onClick={() => {
-                        if (selectedGroup && updateUnits > 0) {
-                          handleUpdateInventory(selectedGroup, updateUnits, 'subtract');
-                        }
-                      }}
-                      disabled={!selectedGroup || updateUnits <= 0}
-                      className="py-5 px-10 bg-red-600 text-white font-bold rounded-2xl hover:bg-red-700 disabled:opacity-60 transition shadow-lg hover:shadow-xl text-lg"
-                    >
-                      Remove Units
-                    </button>
+                    <input
+                      type="text"
+                      placeholder="Reason (e.g. restock, emergency, transfer)"
+                      value={updateReason}
+                      onChange={(e) => setUpdateReason(e.target.value)}
+                      className="p-5 border border-red-200 rounded-2xl focus:ring-4 focus:ring-red-100 outline-none text-lg bg-white/70 md:col-span-2"
+                    />
+
+                    <div className="flex gap-4 md:col-span-5">
+                      <button
+                        onClick={() => {
+                          if (selectedGroup && updateUnits > 0) {
+                            handleUpdateInventory(selectedGroup, updateUnits, 'add');
+                          }
+                        }}
+                        disabled={!selectedGroup || updateUnits <= 0}
+                        className="flex-1 py-5 px-10 bg-green-600 text-white font-bold rounded-2xl hover:bg-green-700 disabled:opacity-60 transition shadow-lg hover:shadow-xl text-lg"
+                      >
+                        Add Units
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          if (selectedGroup && updateUnits > 0) {
+                            handleUpdateInventory(selectedGroup, updateUnits, 'subtract');
+                          }
+                        }}
+                        disabled={!selectedGroup || updateUnits <= 0}
+                        className="flex-1 py-5 px-10 bg-red-600 text-white font-bold rounded-2xl hover:bg-red-700 disabled:opacity-60 transition shadow-lg hover:shadow-xl text-lg"
+                      >
+                        Remove Units
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
             )}
 
-            {/* Other panels with same card style */}
+            {activePanel === 'history' && (
+              <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-10">
+                <h3 className="text-4xl font-bold text-gray-900 mb-8 flex items-center gap-4">
+                  <FaHistory className="text-red-600" />
+                  Activity History
+                </h3>
+
+                {logsLoading ? (
+                  <div className="flex justify-center py-12">
+                    <FaSpinner className="text-5xl text-red-600 animate-spin" />
+                  </div>
+                ) : logs.length === 0 ? (
+                  <p className="text-xl text-gray-600 text-center py-12">No activity recorded yet.</p>
+                ) : (
+                  <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-4">
+                    {logs.map((log) => (
+                      <div
+                        key={log._id}
+                        className={`p-6 rounded-2xl border ${
+                          log.action === 'add' ? 'bg-green-50 border-green-200' :
+                          log.action === 'subtract' ? 'bg-red-50 border-red-200' :
+                          'bg-purple-50 border-purple-200'
+                        }`}
+                      >
+                        <div className="flex justify-between items-start mb-3">
+                          <div>
+                            <span className="font-bold text-lg">
+                              {log.action.toUpperCase()} {log.units} units of {log.bloodGroup}
+                            </span>
+                            {log.reason && (
+                              <p className="text-sm text-gray-600 mt-1">Reason: {log.reason}</p>
+                            )}
+                            {log.action === 'add' && log.expiryDate && (
+                              <p className="text-sm text-orange-700 mt-1 font-medium">
+                                Expiry set: {new Date(log.expiryDate).toLocaleDateString()}
+                              </p>
+                            )}
+                          </div>
+                          <span className="text-sm text-gray-500">
+                            {new Date(log.timestamp).toLocaleString()}
+                          </span>
+                        </div>
+                        <p className="text-gray-700">
+                          By: {log.performedBy?.username || 'System'}
+                        </p>
+                        <p className="text-sm text-gray-600 mt-2">
+                          Stock changed: {log.beforeUnits} → {log.afterUnits}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activePanel === 'notifications' && (
+              <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-12 text-center">
+                <FaBell className="text-9xl text-red-100 mx-auto mb-8 animate-pulse" />
+                <h3 className="text-4xl font-bold text-gray-900 mb-6">Notifications</h3>
+                <p className="text-2xl text-gray-700">Check low stock and expiry alerts here.</p>
+                <p className="text-xl text-gray-500 mt-8">(Alerts appear when stock is low or blood is near expiry)</p>
+              </div>
+            )}
+
             {activePanel === 'donors' && (
               <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-12 text-center">
                 <FaUsers className="text-9xl text-red-100 mx-auto mb-8" />
@@ -345,9 +468,7 @@ function HospitalDashboard({ user }) {
                 <p className="text-2xl text-gray-700 max-w-3xl mx-auto">
                   View and manage registered donors, filter by blood group, availability, and location.
                 </p>
-                <p className="text-xl text-gray-500 mt-8 italic">
-                  (Feature coming soon)
-                </p>
+                <p className="text-xl text-gray-500 mt-8 italic">(Feature coming soon)</p>
               </div>
             )}
 
@@ -358,32 +479,7 @@ function HospitalDashboard({ user }) {
                 <p className="text-2xl text-gray-700 max-w-3xl mx-auto">
                   Manage incoming requests — prioritize urgent cases, match donors, update status.
                 </p>
-                <p className="text-xl text-gray-500 mt-8 italic">
-                  (Feature coming soon)
-                </p>
-              </div>
-            )}
-
-            {activePanel === 'history' && (
-              <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-12 text-center">
-                <FaHistory className="text-9xl text-red-100 mx-auto mb-8" />
-                <h3 className="text-4xl font-bold text-gray-900 mb-6">Activity History</h3>
-                <p className="text-2xl text-gray-700 max-w-3xl mx-auto">
-                  Track inventory changes, requests fulfilled, donations, and hospital actions.
-                </p>
-                <p className="text-xl text-gray-500 mt-8 italic">
-                  (Feature coming soon)
-                </p>
-              </div>
-            )}
-
-            {activePanel === 'notifications' && (
-              <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-12 text-center">
-                <FaBell className="text-9xl text-red-100 mx-auto mb-8 animate-pulse" />
-                <h3 className="text-4xl font-bold text-gray-900 mb-6">Notifications</h3>
-                <p className="text-2xl text-gray-700">
-                  No new notifications at the moment.
-                </p>
+                <p className="text-xl text-gray-500 mt-8 italic">(Feature coming soon)</p>
               </div>
             )}
           </div>

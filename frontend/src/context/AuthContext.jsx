@@ -16,11 +16,11 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Use environment variable for API base URL (important for production)
+  // Set base URL
   axios.defaults.baseURL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
   axios.defaults.headers.post['Content-Type'] = 'application/json';
 
-  // Attach token to every request + handle 401 logout
+  // === TOKEN INTERCEPTOR ===
   useEffect(() => {
     const requestInterceptor = axios.interceptors.request.use(
       (config) => {
@@ -49,7 +49,7 @@ export const AuthProvider = ({ children }) => {
     };
   }, []);
 
-  // Load user on mount
+  // Load user on app start
   useEffect(() => {
     const loadUser = async () => {
       const token = localStorage.getItem('token');
@@ -62,10 +62,9 @@ export const AuthProvider = ({ children }) => {
         const res = await axios.get('/api/auth/me');
         if (res.data.success) {
           setUser(res.data.user);
-          localStorage.setItem('user', JSON.stringify(res.data.user));
         }
       } catch (err) {
-        console.error('Auto login failed:', err.response?.data || err);
+        console.error('Auto login failed:', err);
         logout();
       } finally {
         setLoading(false);
@@ -75,41 +74,32 @@ export const AuthProvider = ({ children }) => {
     loadUser();
   }, []);
 
+  // ==================== LOGIN ====================
   const login = async (email, password) => {
-    try {
-      const res = await axios.post('/api/auth/login', { email, password });
-      if (res.data.success) {
-        const token = res.data.token; // FIXED: token is at root level, not res.data.user.token
-        localStorage.setItem('token', token);
-        localStorage.setItem('user', JSON.stringify(res.data.user));
-        setUser(res.data.user);
-        return res.data.user;
-      }
-      throw new Error(res.data.message || 'Login failed');
-    } catch (err) {
-      throw new Error(err.response?.data?.message || 'Login failed');
+    const res = await axios.post('/api/auth/login', { email, password });
+
+    if (res.data.success) {
+      const token = res.data.user.token;           // ← THIS IS WHERE TOKEN IS
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify(res.data.user));
+      setUser(res.data.user);
+      return res.data.user;
     }
+    throw new Error(res.data.message || 'Login failed');
   };
 
+  // ==================== SIGNUP ====================
   const signup = async (data) => {
-    try {
-      const res = await axios.post('/api/auth/signup', data);
-      if (res.data.success) {
-        const token = res.data.token; // FIXED: token is at root level
-        localStorage.setItem('token', token);
-        localStorage.setItem('user', JSON.stringify(res.data.user));
-        setUser(res.data.user);
-        return res.data.user;
-      }
-      throw new Error(res.data.message || 'Signup failed');
-    } catch (err) {
-      console.error('Signup frontend error:', err);
-      throw new Error(
-        err.response?.data?.message || 
-        err.message || 
-        'Signup failed - please try again'
-      );
+    const res = await axios.post('/api/auth/signup', data);
+
+    if (res.data.success) {
+      const token = res.data.user.token;           // ← THIS IS WHERE TOKEN IS
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify(res.data.user));
+      setUser(res.data.user);
+      return res.data.user;
     }
+    throw new Error(res.data.message || 'Signup failed');
   };
 
   const logout = () => {

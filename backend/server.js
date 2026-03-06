@@ -15,6 +15,9 @@ import authRoutes from './routes/auth.js';
 import bloodRoutes from './routes/blood.js';
 import notificationRoutes from './routes/notification.js';
 
+// Protect middleware
+import { protect } from './middleware/authMiddleware.js';
+
 // ESM __dirname equivalent
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -54,8 +57,10 @@ connectDB();
 
 // ── Routes ──────────────────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
-app.use('/api/blood', bloodRoutes);
-app.use('/api/notifications', notificationRoutes);
+
+// PROTECTED ROUTES - this fixes the 401 Unauthorized errors
+app.use('/api/blood', protect, bloodRoutes);
+app.use('/api/notifications', protect, notificationRoutes);
 
 // ── Forgot Password ─────────────────────────────────────────────────────
 app.post('/api/auth/forgot-password', async (req, res) => {
