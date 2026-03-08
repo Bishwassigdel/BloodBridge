@@ -16,6 +16,7 @@ import {
   FaSpinner,
   FaRedo,
   FaExclamationCircle,
+  FaExchangeAlt,
 } from 'react-icons/fa';
 import { useAuth } from '../context/AuthContext';
 
@@ -38,6 +39,13 @@ function HospitalDashboard() {
   const [logs, setLogs] = useState([]);
   const [logsLoading, setLogsLoading] = useState(false);
 
+  const [notifications, setNotifications] = useState([]);
+  const [notificationsLoading, setNotificationsLoading] = useState(false);
+
+  const [transferGroup, setTransferGroup] = useState('');
+  const [transferUnits, setTransferUnits] = useState('');
+  const [receiverHospital, setReceiverHospital] = useState('');
+
   const token = localStorage.getItem('token');
 
   const handleLogout = () => {
@@ -45,31 +53,59 @@ function HospitalDashboard() {
     navigate('/', { replace: true });
   };
 
-  const fetchInventory = async () => {
+  const isAuthenticated = !!token && user?.role === 'hospital';
+
+  const fetchWithAuth = async (url, options = {}) => {
+    if (!token) {
+      navigate('/login');
+      return null;
+    }
+
     try {
-      const res = await axios.get('/api/blood/inventory', {
-        headers: { 'x-auth-token': token },
+      const res = await axios.get(url, {
+        ...options,
+        headers: { 'x-auth-token': token, ...options.headers },
       });
-      if (res.data.success) {
-        setInventory(res.data.inventory || []);
+      return res.data;
+    } catch (err) {
+      if (err.response?.status === 401) {
+        logout(); // Clear invalid token
+        navigate('/login');
+      }
+      throw err;
+    }
+  };
+
+  const fetchInventory = async () => {
+    if (!isAuthenticated) {
+      setError('Please login as hospital user');
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const data = await fetchWithAuth('/api/blood/inventory');
+      if (data?.success) {
+        setInventory(data.inventory || []);
       } else {
-        setError(res.data.message || 'Failed to load inventory');
+        setError(data?.message || 'Failed to load inventory');
       }
     } catch (err) {
-      setError(err.response?.data?.message || 'Error loading inventory');
+      setError('Error loading inventory');
     } finally {
       setLoading(false);
     }
   };
 
   const fetchLogs = async () => {
+    if (!isAuthenticated) return;
+
     setLogsLoading(true);
     try {
-      const res = await axios.get('/api/blood/inventory-logs', {
-        headers: { 'x-auth-token': token },
-      });
-      if (res.data.success) {
-        setLogs(res.data.logs || []);
+      const data = await fetchWithAuth('/api/blood/inventory-logs');
+      if (data?.success) {
+        setLogs(data.logs || []);
       }
     } catch (err) {
       console.error('Logs fetch failed', err);
@@ -78,20 +114,49 @@ function HospitalDashboard() {
     }
   };
 
+  const fetchNotifications = async () => {
+    if (!isAuthenticated) return;
+
+    setNotificationsLoading(true);
+    try {
+      const data = await fetchWithAuth('/api/notifications');
+      if (data?.success) {
+        setNotifications(data.notifications || []);
+      }
+    } catch (err) {
+      console.error('Notifications fetch failed', err);
+    } finally {
+      setNotificationsLoading(false);
+    }
+  };
+
   useEffect(() => {
+    if (!isAuthenticated) {
+      navigate('/login');
+      return;
+    }
+
     if (user?.role === 'hospital') {
       fetchInventory();
     }
-  }, [user, token]);
+  }, [user, token, navigate]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
+
     if (activePanel === 'history') {
       fetchLogs();
+    }
+    if (activePanel === 'notifications') {
+      fetchNotifications();
+    }
+    if (activePanel === 'inventory') {
+      fetchLogs(); // Ensure Today's Usage loads fresh
     }
   }, [activePanel, token]);
 
   const handleUpdateInventory = async (bloodGroup, units, action) => {
-    if (!bloodGroup || units <= 0) return;
+    if (!isAuthenticated || !bloodGroup || units <= 0) return;
 
     if (action === 'subtract') {
       if (!window.confirm(`Remove ${units} units of ${bloodGroup}?`)) return;
@@ -109,6 +174,7 @@ function HospitalDashboard() {
       });
 
       await fetchInventory();
+      await fetchLogs();
 
       alert(`Successfully ${action}ed ${units} units of ${bloodGroup}`);
 
@@ -117,7 +183,51 @@ function HospitalDashboard() {
       setUpdateReason('');
       setExpiryDate('');
     } catch (err) {
-      alert(err.response?.data?.message || 'Update failed');
+      if (err.response?.status === 401) {
+        logout();
+        navigate('/login');
+      } else {
+        alert(err.response?.data?.message || 'Update failed');
+      }
+    }
+  };
+
+  const handleTransfer = async () => {
+    if (!isAuthenticated || !transferGroup || transferUnits <= 0 || !receiverHospital) return;
+
+    if (!window.confirm(`Transfer ${transferUnits} units of ${transferGroup} to ${receiverHospital}?`)) return;
+
+    try {
+      await axios.post('/api/blood/inventory', {
+        bloodGroup: transferGroup,
+        units: transferUnits,
+        action: 'subtract',
+        reason: `Transfer to ${receiverHospital}`,
+      }, {
+        headers: { 'x-auth-token': token },
+      });
+
+      await axios.post('/api/notifications', {
+        message: `Transfer request from ${user?.hospitalName || 'civil'}: ${transferUnits} units of ${transferGroup} to ${receiverHospital}`,
+        type: 'transfer_request',
+        severity: 'medium',
+      }, { headers: { 'x-auth-token': token } });
+
+      await fetchInventory();
+      await fetchLogs();
+
+      alert(`Transfer request sent to ${receiverHospital}`);
+
+      setTransferGroup('');
+      setTransferUnits('');
+      setReceiverHospital('');
+    } catch (err) {
+      if (err.response?.status === 401) {
+        logout();
+        navigate('/login');
+      } else {
+        alert(err.response?.data?.message || 'Transfer failed');
+      }
     }
   };
 
@@ -131,6 +241,23 @@ function HospitalDashboard() {
     if (!date) return false;
     return new Date(date) < new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   };
+
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-red-50 to-white">
+        <div className="text-center p-8 bg-white rounded-3xl shadow-xl">
+          <h2 className="text-3xl font-bold text-red-600 mb-4">Please Login</h2>
+          <p className="text-lg text-gray-700 mb-6">You need to be logged in as a hospital user to access this dashboard.</p>
+          <button
+            onClick={() => navigate('/login')}
+            className="px-8 py-4 bg-red-600 text-white font-bold rounded-2xl hover:bg-red-700 transition"
+          >
+            Go to Login
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-red-50 via-rose-50 to-white flex">
@@ -233,7 +360,7 @@ function HospitalDashboard() {
 
             {activePanel === 'inventory' && (
               <div className="space-y-12">
-                <div className="grid md:grid-cols-3 gap-8">
+                <div className="grid md:grid-cols-5 gap-8">
                   <div className="bg-white p-8 rounded-3xl shadow-xl border border-red-100 hover:shadow-2xl transition-all duration-300">
                     <h3 className="text-xl font-semibold text-gray-700 mb-4">Total Units</h3>
                     <div className="text-5xl font-extrabold text-red-600">
@@ -256,6 +383,32 @@ function HospitalDashboard() {
                       {inventory.filter(i => i.units === 0).length}
                     </div>
                     <p className="text-lg text-gray-600 mt-3">Out of Stock</p>
+                  </div>
+
+                  <div className="bg-white p-8 rounded-3xl shadow-xl border border-orange-100 hover:shadow-2xl transition-all duration-300">
+                    <h3 className="text-xl font-semibold text-gray-700 mb-4 flex items-center gap-3">
+                      <FaExclamationCircle className="text-orange-600" />
+                      Near Expiry (≤7 days)
+                    </h3>
+                    <div className="text-5xl font-extrabold text-orange-600">
+                      {inventory.filter(i => isNearExpiry(i.earliestExpiryDate)).reduce((sum, i) => sum + i.units, 0)}
+                    </div>
+                    <p className="text-lg text-gray-600 mt-3">Units at risk</p>
+                  </div>
+
+                  <div className="bg-white p-8 rounded-3xl shadow-xl border border-blue-100 hover:shadow-2xl transition-all duration-300">
+                    <h3 className="text-xl font-semibold text-gray-700 mb-4 flex items-center gap-3">
+                      <FaHistory className="text-blue-600" />
+                      Today's Usage
+                    </h3>
+                    <div className="text-5xl font-extrabold text-blue-600">
+                      {logs.filter(log => {
+                        const today = new Date();
+                        const logDate = new Date(log.timestamp);
+                        return logDate.toDateString() === today.toDateString() && log.action === 'subtract';
+                      }).reduce((sum, log) => sum + log.units, 0)}
+                    </div>
+                    <p className="text-lg text-gray-600 mt-3">Units used today</p>
                   </div>
                 </div>
 
@@ -325,7 +478,52 @@ function HospitalDashboard() {
                   })}
                 </div>
 
-                <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-10">
+                <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-8 mt-12">
+                  <h3 className="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-4">
+                    <FaExchangeAlt className="text-red-600" />
+                    Transfer Blood to Another Hospital
+                  </h3>
+
+                  <div className="grid md:grid-cols-4 gap-6">
+                    <select
+                      value={transferGroup || ''}
+                      onChange={(e) => setTransferGroup(e.target.value)}
+                      className="p-5 border border-red-200 rounded-2xl focus:ring-4 focus:ring-red-100 outline-none text-lg bg-white/70"
+                    >
+                      <option value="">Select Blood Group</option>
+                      {['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'].map(g => (
+                        <option key={g} value={g}>{g}</option>
+                      ))}
+                    </select>
+
+                    <input
+                      type="number"
+                      placeholder="Number of units"
+                      min="1"
+                      value={transferUnits}
+                      onChange={(e) => setTransferUnits(e.target.value ? Number(e.target.value) : '')}
+                      className="p-5 border border-red-200 rounded-2xl focus:ring-4 focus:ring-red-100 outline-none text-lg bg-white/70"
+                    />
+
+                    <input
+                      type="text"
+                      placeholder="Receiver Hospital Name / Email"
+                      value={receiverHospital}
+                      onChange={(e) => setReceiverHospital(e.target.value)}
+                      className="p-5 border border-red-200 rounded-2xl focus:ring-4 focus:ring-red-100 outline-none text-lg bg-white/70 md:col-span-2"
+                    />
+
+                    <button
+                      onClick={handleTransfer}
+                      disabled={!transferGroup || transferUnits <= 0 || !receiverHospital}
+                      className="md:col-span-4 py-5 px-10 bg-red-600 text-white font-bold rounded-2xl hover:bg-red-700 disabled:opacity-60 transition shadow-lg hover:shadow-xl text-lg"
+                    >
+                      Send Transfer Request
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-10 mt-12">
                   <h3 className="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-4">
                     <FaTint className="text-red-600 text-4xl" />
                     Bulk Inventory Update
@@ -453,11 +651,57 @@ function HospitalDashboard() {
             )}
 
             {activePanel === 'notifications' && (
-              <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-12 text-center">
-                <FaBell className="text-9xl text-red-100 mx-auto mb-8 animate-pulse" />
-                <h3 className="text-4xl font-bold text-gray-900 mb-6">Notifications</h3>
-                <p className="text-2xl text-gray-700">Check low stock and expiry alerts here.</p>
-                <p className="text-xl text-gray-500 mt-8">(Alerts appear when stock is low or blood is near expiry)</p>
+              <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-10">
+                <h3 className="text-4xl font-bold text-gray-900 mb-8 flex items-center gap-4">
+                  <FaBell className="text-red-600 animate-pulse" />
+                  Notifications & Alerts
+                </h3>
+
+                {notificationsLoading ? (
+                  <div className="flex justify-center py-12">
+                    <FaSpinner className="text-5xl text-red-600 animate-spin" />
+                  </div>
+                ) : notifications.length === 0 ? (
+                  <div className="text-center py-16">
+                    <FaBell className="text-8xl text-red-100 mx-auto mb-6" />
+                    <p className="text-2xl text-gray-700">No new notifications</p>
+                    <p className="text-lg text-gray-500 mt-3">Low stock or near-expiry alerts will appear here</p>
+                  </div>
+                ) : (
+                  <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-4">
+                    {notifications.map((notif) => (
+                      <div
+                        key={notif._id}
+                        className={`p-6 rounded-2xl border shadow-sm ${
+                          notif.severity === 'high' ? 'bg-red-50 border-red-300' :
+                          notif.severity === 'medium' ? 'bg-orange-50 border-orange-300' :
+                          'bg-yellow-50 border-yellow-300'
+                        }`}
+                      >
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <p className="font-bold text-lg mb-1">
+                              {notif.type === 'low_stock' && 'Low Stock Alert'}
+                              {notif.type === 'near_expiry' && 'Near Expiry Alert'}
+                              {notif.type === 'critical_inventory' && 'Critical Inventory Alert'}
+                              {notif.type === 'transfer_request' && 'Transfer Request'}
+                              {!['low_stock', 'near_expiry', 'critical_inventory', 'transfer_request'].includes(notif.type) && notif.type}
+                            </p>
+                            <p className="text-gray-800">{notif.message}</p>
+                          </div>
+                          <span className="text-sm text-gray-500">
+                            {new Date(notif.createdAt).toLocaleString()}
+                          </span>
+                        </div>
+                        {notif.read ? (
+                          <span className="inline-block mt-3 px-3 py-1 bg-gray-100 text-gray-600 rounded-full text-xs">Read</span>
+                        ) : (
+                          <span className="inline-block mt-3 px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-xs animate-pulse">New</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -489,4 +733,4 @@ function HospitalDashboard() {
   );
 }
 
-export default HospitalDashboard;
+export default HospitalDashboard; 
