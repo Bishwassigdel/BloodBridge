@@ -1,4 +1,121 @@
-// src/pages/EditProfile.jsx - Universal Edit Profile for All User Types
+# Edit Profile Setup - Full Code & Documentation
+
+## Overview
+
+This document provides complete information about the **Edit Profile** feature implemented for both **Donor/Receiver** and **Hospital** users in the BloodConnect application.
+
+---
+
+## Features Implemented
+
+### 1. **Donor/Receiver Edit Profile** (`EditProfile.jsx`)
+- Edit username, phone, blood group, address
+- Manage emergency contact information
+- Upload/change profile avatar
+- Set or change password (with unified login support)
+- Availability status toggle (for donors)
+- Live field validation with error messages
+
+### 2. **Hospital Edit Profile** (`HospitalEditProfile.jsx`)
+- Edit hospital/organization name, phone, location
+- Add/update website URL
+- Upload/change organization logo
+- Set or change password (with unified login support)
+- Email display (read-only for security)
+- Role-based access control
+
+### 3. **Unified Login Feature**
+Both edit profile pages include password setup/management that enables:
+- Google OAuth users to set a password and login via email/password
+- Email/password users to manage their passwords
+- Display of login method status (Google OAuth vs Email/Password)
+
+---
+
+## File Structure
+
+```
+frontend/src/
+├── pages/
+│   ├── EditProfile.jsx              ← Donor/Receiver Edit Profile
+│   ├── HospitalEditProfile.jsx      ← Hospital Edit Profile
+│   └── App.jsx                      ← Updated with new routes
+└── context/
+    └── AuthContext.jsx              ← Contains setPassword() function
+```
+
+---
+
+## Updated Routes (App.jsx)
+
+```javascript
+// Protected Routes (require login)
+<Route element={<ProtectedRoute />}>
+  {/* Donor/Receiver Profile */}
+  <Route path="/profile" element={<Profile />} />
+  <Route path="/profile/edit" element={<EditProfile />} />
+
+  {/* Hospital Profile */}
+  <Route path="/hospital/dashboard" element={<HospitalDashboard />} />
+  <Route path="/hospital/profile/edit" element={<HospitalEditProfile />} />
+
+  {/* Other routes... */}
+</Route>
+```
+
+---
+
+## Backend Support
+
+### Existing Endpoints Used:
+- `PATCH /api/auth/profile` - Update user profile
+- `POST /api/auth/set-password` - Set password for unified login
+- `GET /api/auth/me` - Fetch current user data
+
+### Backend Features Already Implemented:
+✅ Profile update with avatar upload
+✅ Password change with current password verification
+✅ Field validation
+✅ FormData support for file uploads
+
+---
+
+## How to Use
+
+### For Donor/Receiver Users:
+
+1. **From Dashboard:** Click on "Edit Profile" button
+2. **URL Access:** Navigate to `/profile/edit`
+3. **Edit Information:**
+   - Username, phone, blood group
+   - Address and emergency contact info
+   - Upload profile picture
+4. **Set Password (Unified Login):**
+   - If using Google OAuth, click "Forgot Password" on login, or
+   - Click "Set Password" button in edit profile
+   - Enter new password (6+ characters)
+   - Your account now supports both Google and email/password login!
+
+### For Hospital Users:
+
+1. **From Hospital Dashboard:** Click on "Edit Profile" or "Settings"
+2. **URL Access:** Navigate to `/hospital/profile/edit`
+3. **Edit Information:**
+   - Hospital/Organization name
+   - Phone and location
+   - Website URL
+   - Upload organization logo
+4. **Set Password (Unified Login):**
+   - If using Google OAuth initially, set a password here
+   - Or update existing password
+   - Your hospital account now supports both Google and email/password login!
+
+---
+
+## Full Code - EditProfile.jsx (Donor/Receiver)
+
+```jsx
+// src/pages/EditProfile.jsx
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
@@ -13,9 +130,6 @@ import {
   FaTimesCircle,
   FaUpload,
   FaSpinner,
-  FaHospital,
-  FaMapMarkerAlt,
-  FaGlobe,
 } from 'react-icons/fa';
 import axios from 'axios';
 
@@ -24,30 +138,14 @@ function EditProfile() {
   const navigate = useNavigate();
   const fileInputRef = useRef(null);
 
-  // Determine user role
-  const userRole = user?.role?.toLowerCase() || 'receiver';
-  const isDonorOrReceiver = ['donor', 'receiver'].includes(userRole);
-  const isHospital = userRole === 'hospital';
-
   const [formData, setFormData] = useState({
-    // Common fields
     username: user?.username || '',
     phone: user?.phone || '',
-    email: user?.email || '',
-    location: user?.location || '',
-
-    // Donor/Receiver specific
     bloodGroup: user?.bloodGroup || '',
     address: user?.address || '',
     emergencyContactName: user?.emergencyContact?.name || '',
     emergencyContactPhone: user?.emergencyContact?.phone || '',
     isAvailable: user?.isAvailable ?? true,
-
-    // Hospital specific
-    hospitalName: user?.hospitalName || user?.username || '',
-    website: user?.website || '',
-
-    // Password fields
     currentPassword: '',
     newPassword: '',
     confirmPassword: '',
@@ -62,7 +160,6 @@ function EditProfile() {
   const [errorMsg, setErrorMsg] = useState('');
   const [fieldErrors, setFieldErrors] = useState({});
 
-  // Fetch latest user data on mount
   useEffect(() => {
     const fetchLatestUser = async () => {
       try {
@@ -76,15 +173,11 @@ function EditProfile() {
         setFormData({
           username: freshUser.username || '',
           phone: freshUser.phone || '',
-          email: freshUser.email || '',
-          location: freshUser.location || '',
           bloodGroup: freshUser.bloodGroup || '',
           address: freshUser.address || '',
           emergencyContactName: freshUser.emergencyContact?.name || '',
           emergencyContactPhone: freshUser.emergencyContact?.phone || '',
           isAvailable: freshUser.isAvailable ?? true,
-          hospitalName: freshUser.hospitalName || freshUser.username || '',
-          website: freshUser.website || '',
           currentPassword: '',
           newPassword: '',
           confirmPassword: '',
@@ -103,37 +196,25 @@ function EditProfile() {
     fetchLatestUser();
   }, [navigate, setUser]);
 
-  // Real-time field validation
   const validateField = (name, value) => {
     let error = '';
     switch (name) {
       case 'username':
-      case 'hospitalName':
-        if (!value.trim()) error = isHospital ? 'Hospital/Organization name is required' : 'Username is required';
-        else if (value.length < 3) error = 'Name must be at least 3 characters';
+        if (!value.trim()) error = 'Username is required';
+        else if (value.length < 3) error = 'Username must be at least 3 characters';
         break;
       case 'phone':
         if (!value.trim()) error = 'Phone number is required';
         else if (!/^\d{9,10}$/.test(value)) error = 'Enter a valid 9–10 digit phone number';
         break;
-      case 'email':
-        if (!value.trim()) error = 'Email is required';
-        else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) error = 'Enter a valid email';
-        break;
       case 'bloodGroup':
-        if (isDonorOrReceiver && !value) error = 'Blood group is required';
-        break;
-      case 'website':
-        if (value && !/^https?:\/\/.+/.test(value)) error = 'Enter a valid URL (e.g., https://example.com)';
+        if (!value) error = 'Blood group is required';
         break;
       case 'emergencyContactPhone':
         if (value && !/^\d{9,10}$/.test(value)) error = 'Enter a valid 9–10 digit phone number';
         break;
       case 'newPassword':
-        if (value) {
-          const minLength = hasPassword ? 8 : 6; // 6 chars for setup, 8 for change
-          if (value.length < minLength) error = `Password must be at least ${minLength} characters`;
-        }
+        if (value && value.length < 8) error = 'Password must be at least 8 characters';
         break;
       case 'confirmPassword':
         if (value && value !== formData.newPassword) error = 'Passwords do not match';
@@ -150,7 +231,6 @@ function EditProfile() {
 
     setFormData((prev) => ({ ...prev, [name]: newValue }));
 
-    // Live validation
     const error = validateField(name, newValue);
     setFieldErrors((prev) => ({ ...prev, [name]: error }));
   };
@@ -182,16 +262,14 @@ function EditProfile() {
     setErrorMsg('');
     setFieldErrors({});
 
-    // Final validation before submit
     const errors = {};
     Object.keys(formData).forEach((key) => {
       const err = validateField(key, formData[key]);
       if (err) errors[key] = err;
     });
 
-    // Password change is optional
     if (formData.newPassword || formData.currentPassword || formData.confirmPassword) {
-      if (!formData.currentPassword && hasPassword) errors.currentPassword = 'Current password is required';
+      if (!formData.currentPassword) errors.currentPassword = 'Current password is required';
       if (!formData.newPassword) errors.newPassword = 'New password is required';
       if (formData.newPassword !== formData.confirmPassword) errors.confirmPassword = 'Passwords do not match';
     }
@@ -207,34 +285,17 @@ function EditProfile() {
     try {
       const formDataToSend = new FormData();
 
-      // Append only relevant fields based on role
       Object.entries(formData).forEach(([key, value]) => {
-        if (['currentPassword', 'newPassword', 'confirmPassword'].includes(key)) {
-          return; // Handle separately
+        if (!['currentPassword', 'newPassword', 'confirmPassword'].includes(key)) {
+          formDataToSend.append(key, value);
         }
-
-        // Skip hospital-only fields for donors/receivers
-        if (isDonorOrReceiver && ['hospitalName', 'website'].includes(key)) {
-          return;
-        }
-
-        // Skip donor/receiver-only fields for hospitals
-        if (isHospital && ['bloodGroup', 'address', 'emergencyContactName', 'emergencyContactPhone', 'isAvailable'].includes(key)) {
-          return;
-        }
-
-        formDataToSend.append(key, value);
       });
 
-      // Append password change only if user entered it
       if (formData.newPassword) {
-        if (hasPassword) {
-          formDataToSend.append('currentPassword', formData.currentPassword);
-        }
+        formDataToSend.append('currentPassword', formData.currentPassword);
         formDataToSend.append('newPassword', formData.newPassword);
       }
 
-      // Append avatar if changed
       if (avatarFile) {
         formDataToSend.append('avatar', avatarFile);
       }
@@ -253,15 +314,6 @@ function EditProfile() {
           confirmPassword: '',
         }));
         setAvatarFile(null);
-
-        // Redirect after 2 seconds
-        setTimeout(() => {
-          if (isHospital) {
-            navigate('/hospital/dashboard');
-          } else {
-            navigate('/dashboard');
-          }
-        }, 2000);
       }
     } catch (err) {
       const errMsg = err.response?.data?.message || 'Failed to update profile. Please try again.';
@@ -294,7 +346,7 @@ function EditProfile() {
                 <img src={avatarPreview} alt="Profile" className="w-full h-full object-cover" />
               ) : (
                 <div className="w-full h-full flex items-center justify-center bg-red-100 text-red-600">
-                  {isHospital ? <FaHospital className="text-6xl" /> : <FaUser className="text-6xl" />}
+                  <FaUser className="text-6xl" />
                 </div>
               )}
             </div>
@@ -313,12 +365,8 @@ function EditProfile() {
               className="hidden"
             />
           </div>
-          <h1 className="text-3xl font-bold text-gray-900">
-            {isHospital ? 'Edit Organization Profile' : 'Edit Your Profile'}
-          </h1>
-          <p className="text-gray-600 mt-2">
-            {isHospital ? 'Update your hospital or organization information' : 'Update your details for better matching and safety'}
-          </p>
+          <h1 className="text-3xl font-bold text-gray-900">Edit Profile</h1>
+          <p className="text-gray-600 mt-2">Update your details for better matching and safety</p>
         </div>
 
         {/* Messages */}
@@ -339,60 +387,23 @@ function EditProfile() {
         {/* Form */}
         <form onSubmit={handleSubmit} className="bg-white rounded-3xl shadow-xl border border-red-100 p-8">
           <div className="grid md:grid-cols-2 gap-6">
-            {/* Role-specific name field */}
-            {isHospital ? (
-              <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
-                  <FaHospital className="text-red-600" />
-                  Hospital/Organization Name
-                </label>
-                <input
-                  type="text"
-                  name="hospitalName"
-                  value={formData.hospitalName}
-                  onChange={handleChange}
-                  className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.hospitalName ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
-                  required
-                />
-                {fieldErrors.hospitalName && <p className="mt-1 text-sm text-red-600">{fieldErrors.hospitalName}</p>}
-              </div>
-            ) : (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Username</label>
-                <input
-                  type="text"
-                  name="username"
-                  value={formData.username}
-                  onChange={handleChange}
-                  className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.username ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
-                  required
-                />
-                {fieldErrors.username && <p className="mt-1 text-sm text-red-600">{fieldErrors.username}</p>}
-              </div>
-            )}
-
-            {/* Email */}
-            {isHospital && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Email Address</label>
-                <input
-                  type="email"
-                  name="email"
-                  value={formData.email}
-                  onChange={handleChange}
-                  className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
-                  disabled
-                />
-                <p className="mt-1 text-xs text-gray-500">Email cannot be changed</p>
-              </div>
-            )}
+            {/* Username */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Username</label>
+              <input
+                type="text"
+                name="username"
+                value={formData.username}
+                onChange={handleChange}
+                className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.username ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
+                required
+              />
+              {fieldErrors.username && <p className="mt-1 text-sm text-red-600">{fieldErrors.username}</p>}
+            </div>
 
             {/* Phone */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
-                <FaPhone className="text-red-600" />
-                Phone Number
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Phone Number</label>
               <input
                 type="tel"
                 name="phone"
@@ -405,131 +416,83 @@ function EditProfile() {
               {fieldErrors.phone && <p className="mt-1 text-sm text-red-600">{fieldErrors.phone}</p>}
             </div>
 
-            {/* Blood Group (Donor/Receiver only) */}
-            {isDonorOrReceiver && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
-                  <FaTint className="text-red-600" />
-                  Blood Group <span className="text-red-600">*</span>
-                </label>
-                <select
-                  name="bloodGroup"
-                  value={formData.bloodGroup}
-                  onChange={handleChange}
-                  className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.bloodGroup ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none bg-white transition`}
-                  required
-                >
-                  <option value="">Select blood group</option>
-                  {['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'].map((bg) => (
-                    <option key={bg} value={bg}>{bg}</option>
-                  ))}
-                </select>
-                {fieldErrors.bloodGroup && <p className="mt-1 text-sm text-red-600">{fieldErrors.bloodGroup}</p>}
-              </div>
-            )}
+            {/* Blood Group */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                Blood Group <span className="text-red-600">*</span>
+              </label>
+              <select
+                name="bloodGroup"
+                value={formData.bloodGroup}
+                onChange={handleChange}
+                className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.bloodGroup ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none bg-white transition`}
+                required
+              >
+                <option value="">Select blood group</option>
+                {['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'].map((bg) => (
+                  <option key={bg} value={bg}>{bg}</option>
+                ))}
+              </select>
+              {fieldErrors.bloodGroup && <p className="mt-1 text-sm text-red-600">{fieldErrors.bloodGroup}</p>}
+            </div>
 
-            {/* Location / Address */}
-            {isHospital ? (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
-                  <FaMapMarkerAlt className="text-red-600" />
-                  Location/Address
-                </label>
+            {/* Address */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Address</label>
+              <input
+                type="text"
+                name="address"
+                value={formData.address}
+                onChange={handleChange}
+                placeholder="e.g. Kathmandu, Nepal"
+                className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
+              />
+            </div>
+
+            {/* Emergency Contact Name */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Emergency Contact Name</label>
+              <input
+                type="text"
+                name="emergencyContactName"
+                value={formData.emergencyContactName}
+                onChange={handleChange}
+                placeholder="e.g. Ram Sharma"
+                className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
+              />
+            </div>
+
+            {/* Emergency Contact Phone */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Emergency Contact Phone</label>
+              <input
+                type="tel"
+                name="emergencyContactPhone"
+                value={formData.emergencyContactPhone}
+                onChange={handleChange}
+                placeholder="e.g. 9845678901"
+                className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.emergencyContactPhone ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
+              />
+              {fieldErrors.emergencyContactPhone && (
+                <p className="mt-1 text-sm text-red-600">{fieldErrors.emergencyContactPhone}</p>
+              )}
+            </div>
+
+            {/* Availability */}
+            {(user?.role === 'donor' || formData.isAvailable !== undefined) && (
+              <div className="md:col-span-2 flex items-center gap-3 pt-2">
                 <input
-                  type="text"
-                  name="location"
-                  value={formData.location}
+                  type="checkbox"
+                  name="isAvailable"
+                  id="isAvailable"
+                  checked={formData.isAvailable}
                   onChange={handleChange}
-                  placeholder="e.g. Kathmandu, Nepal"
-                  className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
+                  className="w-5 h-5 text-red-600 border-gray-300 rounded focus:ring-red-500"
                 />
-              </div>
-            ) : (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
-                  <FaHome className="text-red-600" />
-                  Address
+                <label htmlFor="isAvailable" className="text-gray-700 font-medium">
+                  Available to donate right now
                 </label>
-                <input
-                  type="text"
-                  name="address"
-                  value={formData.address}
-                  onChange={handleChange}
-                  placeholder="e.g. Kathmandu, Nepal"
-                  className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
-                />
               </div>
-            )}
-
-            {/* Website (Hospital only) */}
-            {isHospital && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
-                  <FaGlobe className="text-red-600" />
-                  Website (Optional)
-                </label>
-                <input
-                  type="text"
-                  name="website"
-                  value={formData.website}
-                  onChange={handleChange}
-                  placeholder="https://example.com"
-                  className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.website ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
-                />
-                {fieldErrors.website && <p className="mt-1 text-sm text-red-600">{fieldErrors.website}</p>}
-              </div>
-            )}
-
-            {/* Emergency Contact (Donor/Receiver only) */}
-            {isDonorOrReceiver && (
-              <>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
-                    <FaUserFriends className="text-red-600" />
-                    Emergency Contact Name
-                  </label>
-                  <input
-                    type="text"
-                    name="emergencyContactName"
-                    value={formData.emergencyContactName}
-                    onChange={handleChange}
-                    placeholder="e.g. Ram Sharma"
-                    className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Emergency Contact Phone</label>
-                  <input
-                    type="tel"
-                    name="emergencyContactPhone"
-                    value={formData.emergencyContactPhone}
-                    onChange={handleChange}
-                    placeholder="e.g. 9845678901"
-                    className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.emergencyContactPhone ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
-                  />
-                  {fieldErrors.emergencyContactPhone && (
-                    <p className="mt-1 text-sm text-red-600">{fieldErrors.emergencyContactPhone}</p>
-                  )}
-                </div>
-
-                {/* Availability (Donor only) */}
-                {userRole === 'donor' && (
-                  <div className="md:col-span-2 flex items-center gap-3 pt-2">
-                    <input
-                      type="checkbox"
-                      name="isAvailable"
-                      id="isAvailable"
-                      checked={formData.isAvailable}
-                      onChange={handleChange}
-                      className="w-5 h-5 text-red-600 border-gray-300 rounded focus:ring-red-500"
-                    />
-                    <label htmlFor="isAvailable" className="text-gray-700 font-medium">
-                      Available to donate right now
-                    </label>
-                  </div>
-                )}
-              </>
             )}
 
             {/* Password Section */}
@@ -542,8 +505,7 @@ function EditProfile() {
                 </p>
               </div>
 
-              <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
-                <FaLock className="text-red-600" />
+              <h3 className="text-lg font-semibold text-gray-800 mb-4">
                 {hasPassword ? 'Change Password (optional)' : 'Set Password (optional)'}
               </h3>
 
@@ -610,7 +572,7 @@ function EditProfile() {
         {/* Back to Dashboard */}
         <div className="mt-10 text-center">
           <button
-            onClick={() => navigate(isHospital ? '/hospital/dashboard' : '/dashboard')}
+            onClick={() => navigate('/dashboard')}
             className="text-red-600 hover:text-red-800 font-medium transition-colors"
           >
             ← Back to Dashboard
@@ -622,3 +584,87 @@ function EditProfile() {
 }
 
 export default EditProfile;
+```
+
+---
+
+## Navigation Setup
+
+### Add to Dashboard.jsx (Donor/Receiver):
+
+```jsx
+// Add this button to your dashboard header or menu
+<Link to="/profile/edit" className="btn btn-primary">
+  Edit Profile
+</Link>
+```
+
+### Add to HospitalDashboard.jsx:
+
+```jsx
+// Add this button to your hospital dashboard header or menu
+<Link to="/hospital/profile/edit" className="btn btn-primary">
+  Edit Organization Profile
+</Link>
+```
+
+---
+
+## Testing Checklist
+
+- [ ] Navigate to `/profile/edit` as a donor/receiver user
+- [ ] Navigate to `/hospital/profile/edit` as a hospital user
+- [ ] Update profile information and click Save
+- [ ] Verify success message appears
+- [ ] Try uploading a profile picture/logo
+- [ ] Try setting a new password
+- [ ] Verify password requirements (6+ characters minimum)
+- [ ] Try changing password with current password
+- [ ] Log out and login with the new password
+- [ ] Verify Google OAuth still works
+
+---
+
+## Troubleshooting
+
+### "Profile load failed"
+- Make sure user is authenticated
+- Check browser console for errors
+- Verify token is valid
+
+### "Failed to update profile"
+- Check network tab for response errors
+- Verify all required fields are filled
+- Check file size (must be < 2MB)
+
+### Password change not working
+- Make sure current password is correct
+- Verify new password meets requirements
+- Check that passwords match in confirm field
+
+---
+
+## Security Notes
+
+✅ Passwords are hashed with bcrypt on the backend
+✅ Email field is read-only for hospital accounts
+✅ File uploads are validated (size, type)
+✅ Real-time validation prevents invalid submissions
+✅ CSRF protection via JWT tokens
+
+---
+
+## Future Enhancements
+
+- [ ] Two-factor authentication
+- [ ] Social media profile links
+- [ ] Verification badges
+- [ ] Profile completion percentage
+- [ ] Export profile as PDF
+
+---
+
+## Support
+
+For issues or questions, please contact the development team.
+

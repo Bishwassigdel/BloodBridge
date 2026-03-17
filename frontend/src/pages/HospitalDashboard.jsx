@@ -17,6 +17,8 @@ import {
   FaRedo,
   FaExclamationCircle,
   FaExchangeAlt,
+  FaUser,
+  FaCog,
 } from 'react-icons/fa';
 import { useAuth } from '../context/AuthContext';
 
@@ -198,35 +200,27 @@ function HospitalDashboard() {
     if (!window.confirm(`Transfer ${transferUnits} units of ${transferGroup} to ${receiverHospital}?`)) return;
 
     try {
-      await axios.post('/api/blood/inventory', {
+      const response = await axios.post('/api/blood/transfer/create', {
+        toHospitalEmail: receiverHospital,
         bloodGroup: transferGroup,
-        units: transferUnits,
-        action: 'subtract',
-        reason: `Transfer to ${receiverHospital}`,
+        units: parseInt(transferUnits),
+        reason: `Blood inventory transfer request`,
       }, {
         headers: { 'x-auth-token': token },
       });
 
-      await axios.post('/api/notifications', {
-        message: `Transfer request from ${user?.hospitalName || 'civil'}: ${transferUnits} units of ${transferGroup} to ${receiverHospital}`,
-        type: 'transfer_request',
-        severity: 'medium',
-      }, { headers: { 'x-auth-token': token } });
-
-      await fetchInventory();
-      await fetchLogs();
-
-      alert(`Transfer request sent to ${receiverHospital}`);
-
-      setTransferGroup('');
-      setTransferUnits('');
-      setReceiverHospital('');
+      if (response.data.success) {
+        alert(`✅ Transfer request sent to ${receiverHospital}\n\nAn email has been sent to the hospital. They have 7 days to accept or reject the transfer.`);
+        setTransferGroup('');
+        setTransferUnits('');
+        setReceiverHospital('');
+      }
     } catch (err) {
       if (err.response?.status === 401) {
         logout();
         navigate('/login');
       } else {
-        alert(err.response?.data?.message || 'Transfer failed');
+        alert(err.response?.data?.message || 'Transfer failed. Please check the hospital email.');
       }
     }
   };
@@ -316,6 +310,17 @@ function HospitalDashboard() {
           ))}
 
           <hr className="my-6 border-red-100" />
+
+          <button
+            onClick={() => {
+              navigate('/profile/edit');
+              setSidebarOpen(false);
+            }}
+            className="w-full flex items-center gap-4 px-6 py-4 rounded-2xl text-gray-700 hover:bg-blue-50 hover:text-blue-700 transition-all duration-300 font-medium"
+          >
+            <FaCog className="text-2xl" />
+            <span className="text-lg">Edit Profile</span>
+          </button>
 
           <button
             onClick={handleLogout}
