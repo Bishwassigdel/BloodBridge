@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { GoogleLogin } from '@react-oauth/google';
 import { FaHeartbeat, FaEnvelope, FaLock, FaPhone, FaMapMarkerAlt, FaUser, FaEye, FaEyeSlash } from 'react-icons/fa';
 
 const Register = () => {
@@ -20,7 +21,7 @@ const Register = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
-  const { signup } = useAuth();
+  const { signup, googleLogin } = useAuth();
   const navigate = useNavigate();
 
   const bloodGroups = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
@@ -28,7 +29,15 @@ const Register = () => {
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
-    setError(''); // Clear error on change
+    setError('');
+  };
+
+  const redirectByRole = (role) => {
+    if (role === 'hospital') {
+      navigate('/hospital/dashboard');
+    } else {
+      navigate('/dashboard');
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -36,39 +45,28 @@ const Register = () => {
     setError('');
     setLoading(true);
 
-    // Manual validation (no native HTML5 interference)
     if (formData.password !== formData.confirmPassword) {
       setError("Passwords don't match");
       setLoading(false);
       return;
     }
-
     if (!formData.username.trim()) {
       setError('Name / Organization name is required');
       setLoading(false);
       return;
     }
-
     if (!formData.email.trim()) {
       setError('Email is required');
       setLoading(false);
       return;
     }
-
     if (!formData.location.trim()) {
       setError('Location / Address is required');
       setLoading(false);
       return;
     }
-
     if (!isOrganization && !formData.bloodGroup) {
       setError('Blood group is required for Donor/Receiver');
-      setLoading(false);
-      return;
-    }
-
-    if (isOrganization && !formData.username.trim()) {
-      setError('Organization name is required');
       setLoading(false);
       return;
     }
@@ -80,26 +78,35 @@ const Register = () => {
         username: formData.username.trim(),
         email: formData.email.trim(),
         password: formData.password,
-        location: formData.location.trim(),
         phone: formData.phone?.trim() || '',
         bloodGroup: formData.bloodGroup || '',
+        location: formData.location.trim(),
         role: userRole,
       };
 
-      console.log('Sending to backend:', submitData); // Debug
-
-      const registeredUser = await signup(submitData);
-
-      if (registeredUser.role === 'donor' || registeredUser.role === 'receiver') {
-        navigate('/dashboard');
-      } else if (registeredUser.role === 'hospital') {
-        navigate('/hospital/dashboard');
-      }
+      const { email: verifyEmail, role: verifyRole } = await signup(submitData);
+      navigate('/verify-email', { state: { email: verifyEmail, role: verifyRole } });
     } catch (err) {
-      console.error('Signup error:', err.response?.data || err);
       setError(err.response?.data?.message || 'Registration failed. Please try again.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleGoogleSuccess = async (credentialResponse) => {
+    setError('');
+    try {
+      const role = isOrganization ? 'hospital' : 'receiver';
+      const { userData, isNewUser } = await googleLogin(credentialResponse.credential, role);
+      if (isOrganization) {
+        navigate('/hospital/dashboard', { replace: true });
+      } else if (isNewUser) {
+        navigate('/dashboard', { state: { completeProfile: true } });
+      } else {
+        redirectByRole((userData?.role || '').toLowerCase());
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || err.message || 'Google sign-in failed.');
     }
   };
 
@@ -130,8 +137,8 @@ const Register = () => {
             type="button"
             onClick={() => setIsOrganization(false)}
             className={`flex-1 py-4 px-6 rounded-2xl font-semibold text-base lg:text-lg transition-all duration-300 shadow-md ${
-              !isOrganization 
-                ? 'bg-gradient-to-r from-red-600 to-rose-600 text-white scale-105' 
+              !isOrganization
+                ? 'bg-gradient-to-r from-red-600 to-rose-600 text-white scale-105'
                 : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
             }`}
           >
@@ -141,8 +148,8 @@ const Register = () => {
             type="button"
             onClick={() => setIsOrganization(true)}
             className={`flex-1 py-4 px-6 rounded-2xl font-semibold text-base lg:text-lg transition-all duration-300 shadow-md ${
-              isOrganization 
-                ? 'bg-gradient-to-r from-red-600 to-rose-600 text-white scale-105' 
+              isOrganization
+                ? 'bg-gradient-to-r from-red-600 to-rose-600 text-white scale-105'
                 : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
             }`}
           >
@@ -150,7 +157,32 @@ const Register = () => {
           </button>
         </div>
 
-        {/* Form - added noValidate to disable native browser validation */}
+        {/* Google Button – available for both Donor/Receiver and Organization */}
+        <div className="flex justify-center mb-4">
+          <GoogleLogin
+            onSuccess={handleGoogleSuccess}
+            onError={() => setError('Google sign-in failed. Please try again.')}
+            width="380"
+            text="signup_with"
+            shape="rectangular"
+            theme="outline"
+            size="large"
+          />
+        </div>
+        <p className="text-center text-xs text-gray-400 mb-4">
+          {isOrganization
+            ? 'Google sign-up registers your organization — complete your profile after.'
+            : 'Google sign-up creates a Receiver account — update your role & blood group in Profile.'}
+        </p>
+
+        {/* Divider */}
+        <div className="flex items-center gap-4 mb-6">
+          <hr className="flex-1 border-red-100" />
+          <span className="text-gray-400 text-sm font-medium">or register with email</span>
+          <hr className="flex-1 border-red-100" />
+        </div>
+
+        {/* Form */}
         <form onSubmit={handleSubmit} noValidate className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Name / Organization Name */}
           <div>
@@ -166,7 +198,6 @@ const Register = () => {
                 value={formData.username}
                 onChange={handleChange}
                 className="w-full pl-12 pr-5 py-4 rounded-xl border border-red-200 focus:border-red-500 focus:ring-4 focus:ring-red-100 outline-none transition-all bg-white/70 text-gray-900 text-base"
-                key={isOrganization ? 'org-name' : 'user-name'} // Force re-render on toggle
               />
             </div>
           </div>
@@ -316,8 +347,8 @@ const Register = () => {
         {/* Login Link */}
         <p className="mt-8 text-center text-gray-600 text-lg">
           Already have an account?{' '}
-          <Link 
-            to="/login" 
+          <Link
+            to="/login"
             className="text-red-600 font-bold hover:text-red-700 transition-colors underline underline-offset-4"
           >
             Sign in here

@@ -1,66 +1,45 @@
-// src/pages/EditProfile.jsx - Universal Edit Profile for All User Types
+// src/pages/HospitalEditProfile.jsx
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
-  FaUser,
+  FaHospital,
   FaPhone,
-  FaTint,
-  FaHome,
-  FaUserFriends,
+  FaMapMarkerAlt,
+  FaGlobe,
   FaLock,
   FaCheckCircle,
   FaTimesCircle,
   FaUpload,
   FaSpinner,
-  FaHospital,
-  FaMapMarkerAlt,
-  FaGlobe,
 } from 'react-icons/fa';
 import axios from 'axios';
 
-function EditProfile() {
+function HospitalEditProfile() {
   const { user, setUser } = useAuth();
   const navigate = useNavigate();
   const fileInputRef = useRef(null);
 
-  // Determine user role
-  const userRole = user?.role?.toLowerCase() || 'receiver';
-  const isDonorOrReceiver = ['donor', 'receiver'].includes(userRole);
-  const isHospital = userRole === 'hospital';
-
   const [formData, setFormData] = useState({
-    // Common fields
-    username: user?.username || '',
-    phone: user?.phone || '',
-    email: user?.email || '',
-    location: user?.location || '',
-
-    // Donor/Receiver specific
-    bloodGroup: user?.bloodGroup || '',
-    address: user?.address || '',
-    emergencyContactName: user?.emergencyContact?.name || '',
-    emergencyContactPhone: user?.emergencyContact?.phone || '',
-    isAvailable: user?.isAvailable ?? true,
-
-    // Hospital specific
     hospitalName: user?.hospitalName || user?.username || '',
+    email: user?.email || '',
+    phone: user?.phone || '',
+    location: user?.location || '',
     website: user?.website || '',
-
-    // Password fields
     currentPassword: '',
     newPassword: '',
     confirmPassword: '',
   });
 
-  const [hasPassword, setHasPassword] = useState(false);
   const [avatarPreview, setAvatarPreview] = useState(user?.avatar || null);
   const [avatarFile, setAvatarFile] = useState(null);
+
   const [loading, setLoading] = useState(false);
   const [fetching, setFetching] = useState(true);
   const [successMsg, setSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
   const [fieldErrors, setFieldErrors] = useState({});
+  const [hasPassword, setHasPassword] = useState(false);
 
   // Fetch latest user data on mount
   useEffect(() => {
@@ -70,20 +49,21 @@ function EditProfile() {
         if (!token) return navigate('/login');
 
         const res = await axios.get('/api/auth/me');
+
         const freshUser = res.data.user || res.data;
+
+        // Verify user is hospital
+        if (freshUser.role !== 'hospital') {
+          return navigate('/dashboard');
+        }
+
         setUser(freshUser);
 
         setFormData({
-          username: freshUser.username || '',
-          phone: freshUser.phone || '',
-          email: freshUser.email || '',
-          location: freshUser.location || '',
-          bloodGroup: freshUser.bloodGroup || '',
-          address: freshUser.address || '',
-          emergencyContactName: freshUser.emergencyContact?.name || '',
-          emergencyContactPhone: freshUser.emergencyContact?.phone || '',
-          isAvailable: freshUser.isAvailable ?? true,
           hospitalName: freshUser.hospitalName || freshUser.username || '',
+          email: freshUser.email || '',
+          phone: freshUser.phone || '',
+          location: freshUser.location || '',
           website: freshUser.website || '',
           currentPassword: '',
           newPassword: '',
@@ -107,9 +87,8 @@ function EditProfile() {
   const validateField = (name, value) => {
     let error = '';
     switch (name) {
-      case 'username':
       case 'hospitalName':
-        if (!value.trim()) error = isHospital ? 'Hospital/Organization name is required' : 'Username is required';
+        if (!value.trim()) error = 'Hospital/Organization name is required';
         else if (value.length < 3) error = 'Name must be at least 3 characters';
         break;
       case 'phone':
@@ -120,20 +99,11 @@ function EditProfile() {
         if (!value.trim()) error = 'Email is required';
         else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) error = 'Enter a valid email';
         break;
-      case 'bloodGroup':
-        if (isDonorOrReceiver && !value) error = 'Blood group is required';
-        break;
       case 'website':
         if (value && !/^https?:\/\/.+/.test(value)) error = 'Enter a valid URL (e.g., https://example.com)';
         break;
-      case 'emergencyContactPhone':
-        if (value && !/^\d{9,10}$/.test(value)) error = 'Enter a valid 9–10 digit phone number';
-        break;
       case 'newPassword':
-        if (value) {
-          const minLength = hasPassword ? 8 : 6; // 6 chars for setup, 8 for change
-          if (value.length < minLength) error = `Password must be at least ${minLength} characters`;
-        }
+        if (value && value.length < 8) error = 'Password must be at least 8 characters';
         break;
       case 'confirmPassword':
         if (value && value !== formData.newPassword) error = 'Passwords do not match';
@@ -145,13 +115,12 @@ function EditProfile() {
   };
 
   const handleChange = (e) => {
-    const { name, value, type, checked } = e.target;
-    const newValue = type === 'checkbox' ? checked : value;
+    const { name, value } = e.target;
 
-    setFormData((prev) => ({ ...prev, [name]: newValue }));
+    setFormData((prev) => ({ ...prev, [name]: value }));
 
     // Live validation
-    const error = validateField(name, newValue);
+    const error = validateField(name, value);
     setFieldErrors((prev) => ({ ...prev, [name]: error }));
   };
 
@@ -189,7 +158,7 @@ function EditProfile() {
       if (err) errors[key] = err;
     });
 
-    // Password change is optional
+    // Password change is optional — only validate if attempting it
     if (formData.newPassword || formData.currentPassword || formData.confirmPassword) {
       if (!formData.currentPassword && hasPassword) errors.currentPassword = 'Current password is required';
       if (!formData.newPassword) errors.newPassword = 'New password is required';
@@ -207,23 +176,11 @@ function EditProfile() {
     try {
       const formDataToSend = new FormData();
 
-      // Append only relevant fields based on role
+      // Append normal fields
       Object.entries(formData).forEach(([key, value]) => {
-        if (['currentPassword', 'newPassword', 'confirmPassword'].includes(key)) {
-          return; // Handle separately
+        if (!['currentPassword', 'newPassword', 'confirmPassword'].includes(key)) {
+          formDataToSend.append(key, value);
         }
-
-        // Skip hospital-only fields for donors/receivers
-        if (isDonorOrReceiver && ['hospitalName', 'website'].includes(key)) {
-          return;
-        }
-
-        // Skip donor/receiver-only fields for hospitals
-        if (isHospital && ['bloodGroup', 'address', 'emergencyContactName', 'emergencyContactPhone', 'isAvailable'].includes(key)) {
-          return;
-        }
-
-        formDataToSend.append(key, value);
       });
 
       // Append password change only if user entered it
@@ -240,12 +197,15 @@ function EditProfile() {
       }
 
       const res = await axios.patch('/api/auth/profile', formDataToSend, {
-        headers: { 'Content-Type': 'multipart/form-data' },
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
       });
 
       if (res.data.success) {
         setSuccessMsg('Profile updated successfully!');
         setUser(res.data.user || { ...user, ...formData });
+        // Reset password fields & file
         setFormData((prev) => ({
           ...prev,
           currentPassword: '',
@@ -253,20 +213,12 @@ function EditProfile() {
           confirmPassword: '',
         }));
         setAvatarFile(null);
-
-        // Redirect after 2 seconds
-        setTimeout(() => {
-          if (isHospital) {
-            navigate('/hospital/dashboard');
-          } else {
-            navigate('/dashboard');
-          }
-        }, 2000);
       }
     } catch (err) {
       const errMsg = err.response?.data?.message || 'Failed to update profile. Please try again.';
       setErrorMsg(errMsg);
 
+      // Show backend field errors if any
       if (err.response?.data?.errors) {
         setFieldErrors(err.response.data.errors);
       }
@@ -291,10 +243,10 @@ function EditProfile() {
           <div className="inline-block relative mb-4">
             <div className="w-32 h-32 rounded-full overflow-hidden border-4 border-white shadow-xl bg-gray-100">
               {avatarPreview ? (
-                <img src={avatarPreview} alt="Profile" className="w-full h-full object-cover" />
+                <img src={avatarPreview} alt="Organization Logo" className="w-full h-full object-cover" />
               ) : (
                 <div className="w-full h-full flex items-center justify-center bg-red-100 text-red-600">
-                  {isHospital ? <FaHospital className="text-6xl" /> : <FaUser className="text-6xl" />}
+                  <FaHospital className="text-6xl" />
                 </div>
               )}
             </div>
@@ -313,11 +265,9 @@ function EditProfile() {
               className="hidden"
             />
           </div>
-          <h1 className="text-3xl font-bold text-gray-900">
-            {isHospital ? 'Edit Organization Profile' : 'Edit Your Profile'}
-          </h1>
+          <h1 className="text-3xl font-bold text-gray-900">Edit Organization Profile</h1>
           <p className="text-gray-600 mt-2">
-            {isHospital ? 'Update your hospital or organization information' : 'Update your details for better matching and safety'}
+            Update your hospital or organization information
           </p>
         </div>
 
@@ -339,53 +289,38 @@ function EditProfile() {
         {/* Form */}
         <form onSubmit={handleSubmit} className="bg-white rounded-3xl shadow-xl border border-red-100 p-8">
           <div className="grid md:grid-cols-2 gap-6">
-            {/* Role-specific name field */}
-            {isHospital ? (
-              <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
-                  <FaHospital className="text-red-600" />
-                  Hospital/Organization Name
-                </label>
-                <input
-                  type="text"
-                  name="hospitalName"
-                  value={formData.hospitalName}
-                  onChange={handleChange}
-                  className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.hospitalName ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
-                  required
-                />
-                {fieldErrors.hospitalName && <p className="mt-1 text-sm text-red-600">{fieldErrors.hospitalName}</p>}
-              </div>
-            ) : (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Username</label>
-                <input
-                  type="text"
-                  name="username"
-                  value={formData.username}
-                  onChange={handleChange}
-                  className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.username ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
-                  required
-                />
-                {fieldErrors.username && <p className="mt-1 text-sm text-red-600">{fieldErrors.username}</p>}
-              </div>
-            )}
+            {/* Hospital Name */}
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
+                <FaHospital className="text-red-600" />
+                Hospital/Organization Name
+              </label>
+              <input
+                type="text"
+                name="hospitalName"
+                value={formData.hospitalName}
+                onChange={handleChange}
+                className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.hospitalName ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
+                required
+              />
+              {fieldErrors.hospitalName && <p className="mt-1 text-sm text-red-600">{fieldErrors.hospitalName}</p>}
+            </div>
 
             {/* Email */}
-            {isHospital && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5">Email Address</label>
-                <input
-                  type="email"
-                  name="email"
-                  value={formData.email}
-                  onChange={handleChange}
-                  className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
-                  disabled
-                />
-                <p className="mt-1 text-xs text-gray-500">Email cannot be changed</p>
-              </div>
-            )}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Email Address</label>
+              <input
+                type="email"
+                name="email"
+                value={formData.email}
+                onChange={handleChange}
+                className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.email ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
+                required
+                disabled
+              />
+              {fieldErrors.email && <p className="mt-1 text-sm text-red-600">{fieldErrors.email}</p>}
+              <p className="mt-1 text-xs text-gray-500">Email cannot be changed</p>
+            </div>
 
             {/* Phone */}
             <div>
@@ -405,132 +340,38 @@ function EditProfile() {
               {fieldErrors.phone && <p className="mt-1 text-sm text-red-600">{fieldErrors.phone}</p>}
             </div>
 
-            {/* Blood Group (Donor/Receiver only) */}
-            {isDonorOrReceiver && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
-                  <FaTint className="text-red-600" />
-                  Blood Group <span className="text-red-600">*</span>
-                </label>
-                <select
-                  name="bloodGroup"
-                  value={formData.bloodGroup}
-                  onChange={handleChange}
-                  className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.bloodGroup ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none bg-white transition`}
-                  required
-                >
-                  <option value="">Select blood group</option>
-                  {['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'].map((bg) => (
-                    <option key={bg} value={bg}>{bg}</option>
-                  ))}
-                </select>
-                {fieldErrors.bloodGroup && <p className="mt-1 text-sm text-red-600">{fieldErrors.bloodGroup}</p>}
-              </div>
-            )}
+            {/* Location */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
+                <FaMapMarkerAlt className="text-red-600" />
+                Location/Address
+              </label>
+              <input
+                type="text"
+                name="location"
+                value={formData.location}
+                onChange={handleChange}
+                placeholder="e.g. Kathmandu, Nepal"
+                className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
+              />
+            </div>
 
-            {/* Location / Address */}
-            {isHospital ? (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
-                  <FaMapMarkerAlt className="text-red-600" />
-                  Location/Address
-                </label>
-                <input
-                  type="text"
-                  name="location"
-                  value={formData.location}
-                  onChange={handleChange}
-                  placeholder="e.g. Kathmandu, Nepal"
-                  className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
-                />
-              </div>
-            ) : (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
-                  <FaHome className="text-red-600" />
-                  Address
-                </label>
-                <input
-                  type="text"
-                  name="address"
-                  value={formData.address}
-                  onChange={handleChange}
-                  placeholder="e.g. Kathmandu, Nepal"
-                  className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
-                />
-              </div>
-            )}
-
-            {/* Website (Hospital only) */}
-            {isHospital && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
-                  <FaGlobe className="text-red-600" />
-                  Website (Optional)
-                </label>
-                <input
-                  type="text"
-                  name="website"
-                  value={formData.website}
-                  onChange={handleChange}
-                  placeholder="https://example.com"
-                  className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.website ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
-                />
-                {fieldErrors.website && <p className="mt-1 text-sm text-red-600">{fieldErrors.website}</p>}
-              </div>
-            )}
-
-            {/* Emergency Contact (Donor/Receiver only) */}
-            {isDonorOrReceiver && (
-              <>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
-                    <FaUserFriends className="text-red-600" />
-                    Emergency Contact Name
-                  </label>
-                  <input
-                    type="text"
-                    name="emergencyContactName"
-                    value={formData.emergencyContactName}
-                    onChange={handleChange}
-                    placeholder="e.g. Ram Sharma"
-                    className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Emergency Contact Phone</label>
-                  <input
-                    type="tel"
-                    name="emergencyContactPhone"
-                    value={formData.emergencyContactPhone}
-                    onChange={handleChange}
-                    placeholder="e.g. 9845678901"
-                    className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.emergencyContactPhone ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
-                  />
-                  {fieldErrors.emergencyContactPhone && (
-                    <p className="mt-1 text-sm text-red-600">{fieldErrors.emergencyContactPhone}</p>
-                  )}
-                </div>
-
-                {/* Availability (Donor only) */}
-                {userRole === 'donor' && (
-                  <div className="md:col-span-2 flex items-center gap-3 pt-2">
-                    <input
-                      type="checkbox"
-                      name="isAvailable"
-                      id="isAvailable"
-                      checked={formData.isAvailable}
-                      onChange={handleChange}
-                      className="w-5 h-5 text-red-600 border-gray-300 rounded focus:ring-red-500"
-                    />
-                    <label htmlFor="isAvailable" className="text-gray-700 font-medium">
-                      Available to donate right now
-                    </label>
-                  </div>
-                )}
-              </>
-            )}
+            {/* Website */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
+                <FaGlobe className="text-red-600" />
+                Website (Optional)
+              </label>
+              <input
+                type="text"
+                name="website"
+                value={formData.website}
+                onChange={handleChange}
+                placeholder="https://example.com"
+                className={`w-full px-4 py-3 rounded-xl border ${fieldErrors.website ? 'border-red-500' : 'border-red-200'} focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition`}
+              />
+              {fieldErrors.website && <p className="mt-1 text-sm text-red-600">{fieldErrors.website}</p>}
+            </div>
 
             {/* Password Section */}
             <div className="md:col-span-2 pt-6 border-t border-gray-200">
@@ -601,7 +442,7 @@ function EditProfile() {
                 className={`w-full py-4 px-6 bg-gradient-to-r from-red-600 to-rose-600 text-white font-bold rounded-xl shadow-lg hover:shadow-2xl hover:scale-[1.02] transition-all duration-300 disabled:opacity-60 disabled:cursor-not-allowed flex items-center justify-center gap-3`}
               >
                 {loading && <FaSpinner className="animate-spin" />}
-                {loading ? 'Saving Changes...' : 'Save Profile'}
+                {loading ? 'Saving Changes...' : 'Save Organization Profile'}
               </button>
             </div>
           </div>
@@ -610,10 +451,10 @@ function EditProfile() {
         {/* Back to Dashboard */}
         <div className="mt-10 text-center">
           <button
-            onClick={() => navigate(isHospital ? '/hospital/dashboard' : '/dashboard')}
+            onClick={() => navigate('/hospital/dashboard')}
             className="text-red-600 hover:text-red-800 font-medium transition-colors"
           >
-            ← Back to Dashboard
+            ← Back to Hospital Dashboard
           </button>
         </div>
       </div>
@@ -621,4 +462,4 @@ function EditProfile() {
   );
 }
 
-export default EditProfile;
+export default HospitalEditProfile;

@@ -3,7 +3,8 @@ import mongoose from 'mongoose';
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true },
   email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
+  password: { type: String, select: false },  // optional for Google users
+  googleId: { type: String },
   bloodGroup: { 
     type: String, 
     enum: ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'] 
@@ -26,6 +27,11 @@ const userSchema = new mongoose.Schema({
     name: { type: String, default: '' },
     phone: { type: String, default: '' }
   },
+
+  // Email Verification fields
+  isVerified: { type: Boolean, default: false },
+  verificationCode: String,
+  verificationCodeExpires: Date,
 
   // Forgot/Reset Password fields
   resetPasswordToken: String,

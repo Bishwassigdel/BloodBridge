@@ -10,6 +10,10 @@ import {
   FaClock,
   FaAmbulance,
   FaArrowUp,
+  FaCheckCircle,
+  FaUserPlus,
+  FaHandHoldingHeart,
+  FaExchangeAlt,
 } from 'react-icons/fa';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
@@ -22,6 +26,8 @@ function Home() {
 
   const [scrollY, setScrollY] = useState(0);
   const [showAllEvents, setShowAllEvents] = useState(false);
+  const [selectedTestimonial, setSelectedTestimonial] = useState(null);
+  const [selectedStep, setSelectedStep] = useState(null);
 
   const navigate = useNavigate();
 
@@ -46,7 +52,6 @@ function Home() {
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
-  // Protected navigation for blood request buttons
   const handleRequestBlood = (isEmergency = false) => {
     const targetPath = isEmergency 
       ? '/blood-request?mode=emergency' 
@@ -67,36 +72,96 @@ function Home() {
       alt: "Large community blood donation drive with many donors",
       title: "Adani Group Mega Drive",
       desc: "27,661 units collected",
+      videoUrl: null,
     },
     {
       src: "https://www.shutterstock.com/image-photo/surat-gujarat-indiaapril-27-2025-600nw-2622820221.jpg",
       alt: "Medical staff assisting donors in blood camp",
       title: "Surat Community Camp",
       desc: "Dedicated medical team",
+      videoUrl: null,
     },
     {
       src: "https://npr.brightspotcdn.com/d2/95/57312a3e414bb60e8498c06a47e7/fairfield-donors.JPG",
       alt: "High school students in blood donation drive",
       title: "High School Blood Drive",
       desc: "Young heroes saving lives",
+      videoUrl: null,
     },
     {
       src: "https://nursing.georgetown.edu/wp-content/uploads/2023/10/Blood-Drive-Students-Simulator-1024x768.jpg",
       alt: "Nursing students organizing blood drive",
       title: "Georgetown Nursing Drive",
       desc: "Second successful event",
+      videoUrl: null,
     },
     {
       src: "https://resources.finalsite.net/images/f_auto,q_auto,t_image_size_2/v1744297714/unionpsorg/m07sivyb5cjp6byl1wax/490718285_1044932271023992_3055873174380779185_n.jpg",
       alt: "Union High School blood donation camp",
       title: "Union High School Camp",
       desc: "Students giving back",
+      videoUrl: null,
     },
     {
       src: "https://c.ndtvimg.com/2025-06/5371lv2_adani-group-blood-donation-drive-_625x300_25_June_25.jpeg",
       alt: "Rows of donors at community blood drive",
       title: "LifeSouth Community Drive",
       desc: "AB donors in action",
+      videoUrl: null,
+    },
+  ];
+
+  const testimonials = [
+    {
+      name: "Anita R.",
+      role: "Donor",
+      location: "Kathmandu",
+      photo: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?ixlib=rb-4.0.3&auto=format&fit=crop&w=300&q=80",
+      message: "I donated for the first time through BloodBridge and saved a child's life. The platform made it so easy and safe. I never thought donating could be this simple and meaningful. Now I donate regularly and encourage my friends too. Feeling proud to be part of this life-saving community.",
+      verified: true,
+    },
+    {
+      name: "Ramesh K.",
+      role: "Receiver",
+      location: "Pokhara",
+      photo: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?ixlib=rb-4.0.3&auto=format&fit=crop&w=300&q=80",
+      message: "My family was in panic during an emergency. Found a donor in just 20 minutes. BloodBridge literally saved my mother's life. The coordination was perfect, the donor was very kind, and the whole process was stress-free. Grateful beyond words.",
+      verified: true,
+    },
+    {
+      name: "Dr. Sita M.",
+      role: "Doctor, Civil Hospital",
+      location: "Birgunj",
+      photo: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?ixlib=rb-4.0.3&auto=format&fit=crop&w=300&q=80",
+      message: "Our hospital now gets requests fulfilled much faster thanks to real-time matching. BloodBridge has reduced our emergency shortages by over 60%. The platform is reliable, secure, and truly makes a difference in patient care. Highly recommend for all medical institutions.",
+      verified: true,
+    },
+  ];
+
+  const howItWorksSteps = [
+    {
+      icon: FaUserPlus,
+      step: '1',
+      title: 'Join in Seconds',
+      shortDesc: 'Sign up quickly as a donor, receiver, or hospital with your blood group and location.',
+      fullDesc: 'Creating an account takes under a minute. Choose your role — donor, receiver, or hospital — enter your blood group, phone number, and location. Donors can set availability, receivers can save emergency contacts, and hospitals can verify their profile. Once registered, you\'re instantly part of Nepal\'s largest blood lifeline network.',
+      color: 'from-red-500 to-rose-600',
+    },
+    {
+      icon: FaExchangeAlt,
+      step: '2',
+      title: 'Instant Matching',
+      shortDesc: 'Real-time matching connects needs with compatible donors instantly.',
+      fullDesc: 'When a receiver or hospital posts a request, BloodBridge uses smart matching to find donors with the right blood group and nearby location. Donors get instant notifications, hospitals see real-time inventory updates, and urgent requests are prioritized. The system ensures the fastest possible connection so blood reaches where it\'s needed most.',
+      color: 'from-rose-500 to-red-600',
+    },
+    {
+      icon: FaHandHoldingHeart,
+      step: '3',
+      title: 'Coordinate & Save Lives',
+      shortDesc: 'Chat, schedule, and track donations — all in one secure place.',
+      fullDesc: 'Once matched, use built-in chat to coordinate pickup time and location. Track donation status, send thank-you messages, and mark successful donations. Hospitals update inventory in real-time, donors earn recognition badges, and every completed donation contributes to saving lives — all managed seamlessly through BloodBridge.',
+      color: 'from-red-600 to-rose-700',
     },
   ];
 
@@ -136,7 +201,6 @@ function Home() {
 
           <div className="relative container mx-auto px-4 py-16 md:py-24 lg:py-28 z-10">
             <div className="grid lg:grid-cols-2 gap-12 items-center">
-              {/* Left Text */}
               <div className="animate-fade-up">
                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-red-100 text-red-700 text-sm font-medium mb-5 animate-scale-in">
                   <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse-soft" />
@@ -157,10 +221,7 @@ function Home() {
                   </span>
                 </h1>
 
-                <p
-                  className="text-lg md:text-xl text-gray-700 mb-8 max-w-xl animate-fade-up"
-                  style={{ animationDelay: '0.4s' }}
-                >
+                <p className="text-lg md:text-xl text-gray-700 mb-8 max-w-xl animate-fade-up" style={{ animationDelay: '0.4s' }}>
                   BloodBridge connects donors, receivers, and hospitals in real-time so that no life is lost due to the lack of blood. Join a growing network of heroes today.
                 </p>
 
@@ -201,7 +262,6 @@ function Home() {
                 </div>
               </div>
 
-              {/* Right Dashboard Preview Card */}
               <div className="relative lg:block animate-fade-up-delayed">
                 <div
                   className="relative bg-white rounded-3xl shadow-2xl border border-red-200 p-6 md:p-8 max-w-md mx-auto animate-float hover:scale-105 transition-transform duration-300"
@@ -282,64 +342,235 @@ function Home() {
           </div>
         </section>
 
-        {/* How It Works Section */}
-        <section id="how-it-works" ref={howItWorksRef} className="bg-gradient-to-br from-red-50 via-white to-red-50 relative overflow-hidden">
-          <div className="container mx-auto px-4 py-14 md:py-20">
+        {/* How It Works Section – Smaller + Read More Modal */}
+        <section id="how-it-works" ref={howItWorksRef} className="bg-gradient-to-br from-red-50 via-white to-rose-50 relative overflow-hidden py-12 md:py-16">
+          <div className="absolute inset-0 pointer-events-none">
+            <div className="absolute -top-24 -right-24 w-80 h-80 bg-red-100 rounded-full blur-3xl opacity-30 animate-float-slow" />
+            <div className="absolute -bottom-16 -left-32 w-64 h-64 bg-rose-100 rounded-full blur-3xl opacity-20 animate-float" />
+          </div>
+
+          <div className="relative container mx-auto px-4">
             <div
-              className={`max-w-3xl mx-auto text-center mb-10 transition-all duration-1000 ${howItWorksVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}
+              className={`text-center mb-12 transition-all duration-1000 ${howItWorksVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-12'}`}
             >
-              <p className="text-sm font-semibold text-red-700 mb-2 uppercase tracking-wide">How BloodBridge works</p>
-              <h2 className="text-3xl md:text-4xl font-bold text-gray-900 mb-4">One platform for donors, receivers, and hospitals</h2>
-              <p className="text-gray-600">We keep the flow of blood donations simple, transparent, and fast by bringing every stakeholder to a single coordinated platform.</p>
+              <p className="text-sm font-semibold text-red-700 mb-2 uppercase tracking-wider">Simple. Fast. Life-saving.</p>
+              <h2 className="text-3xl md:text-4xl font-extrabold text-gray-900 mb-4">
+                One Platform for Everyone
+              </h2>
+              <p className="text-lg text-gray-700 max-w-3xl mx-auto">
+                Donors, receivers, and hospitals — all connected in real time.
+              </p>
             </div>
-            <div className="grid md:grid-cols-3 gap-8">
-              {[
-                { step: '1', title: 'Register in seconds', desc: 'Choose your role as a donor, receiver, or hospital. Fill in your basic details and blood group to join the network.' },
-                { step: '2', title: 'Create or match requests', desc: 'Receivers and hospitals create blood requests, and BloodBridge instantly finds compatible donors by group and location.' },
-                { step: '3', title: 'Coordinate and donate', desc: 'Use the dashboards to track requests, view inventory, and coordinate donations seamlessly.' },
-              ].map((item, idx) => (
-                <div
-                  key={idx}
-                  className={`bg-white rounded-2xl shadow-lg p-6 relative overflow-hidden transition-all duration-700 hover:shadow-xl hover:-translate-y-2 transform ${howItWorksVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}
-                  style={{ transitionDelay: `${idx * 200}ms` }}
-                >
-                  <div className="absolute top-0 right-0 w-20 h-20 bg-red-100 rounded-bl-full animate-pulse-soft" />
-                  <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-red-100 to-rose-100 flex items-center justify-center mb-4 relative group hover:scale-110 transition-transform">
-                    <span className="font-bold text-red-700 text-lg">{item.step}</span>
-                    <div className="absolute inset-0 rounded-xl bg-red-700 opacity-0 group-hover:opacity-20 transition-opacity" />
+
+            <div className="grid md:grid-cols-3 gap-6 md:gap-8 max-w-5xl mx-auto">
+              {howItWorksSteps.map((item, idx) => {
+                const shortDesc = item.fullDesc.length > 100 ? item.fullDesc.substring(0, 100) + '...' : item.fullDesc;
+
+                return (
+                  <div
+                    key={idx}
+                    className={`bg-white rounded-2xl shadow-lg border border-red-100 p-6 transition-all duration-500 hover:shadow-xl hover:-translate-y-3 hover:border-red-200 relative overflow-hidden group ${howItWorksVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-12'}`}
+                    style={{ transitionDelay: `${idx * 200}ms` }}
+                  >
+                    <div className="absolute -top-8 -right-8 w-32 h-32 bg-gradient-to-br from-red-50 to-rose-50 rounded-full opacity-40 group-hover:opacity-60 transition-opacity" />
+
+                    <div className={`w-14 h-14 rounded-xl bg-gradient-to-br ${item.color} flex items-center justify-center mb-5 shadow-md group-hover:scale-110 transition-transform`}>
+                      <item.icon className="text-2xl text-white" />
+                    </div>
+
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center text-red-700 font-bold text-lg">
+                        {item.step}
+                      </div>
+                      <h3 className="text-xl font-bold text-gray-900">{item.title}</h3>
+                    </div>
+
+                    <p className="text-gray-700 text-sm leading-relaxed mb-4">
+                      {shortDesc}
+                    </p>
+
+                    {item.fullDesc.length > 100 && (
+                      <button
+                        onClick={() => setSelectedStep(item)}
+                        className="text-red-600 font-medium hover:text-red-800 transition flex items-center gap-1.5 text-sm group"
+                      >
+                        Read more
+                        <FaArrowRight className="text-xs group-hover:translate-x-1 transition-transform" />
+                      </button>
+                    )}
                   </div>
-                  <h3 className="text-xl font-semibold text-gray-900 mb-2">{item.title}</h3>
-                  <p className="text-gray-600 text-sm mb-2">{item.desc}</p>
+                );
+              })}
+            </div>
+
+            {/* Full Step Description Modal */}
+            {selectedStep && (
+              <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-2xl max-w-xl w-full max-h-[85vh] overflow-y-auto shadow-2xl border border-red-100 animate-scale-in">
+                  <div className="p-6 md:p-8">
+                    <div className="flex justify-between items-start mb-6">
+                      <div className="flex items-center gap-4">
+                        <div className={`w-16 h-16 rounded-xl bg-gradient-to-br ${selectedStep.color} flex items-center justify-center shadow-md`}>
+                          <selectedStep.icon className="text-3xl text-white" />
+                        </div>
+                        <div>
+                          <h3 className="text-2xl font-bold text-gray-900">{selectedStep.title}</h3>
+                          <p className="text-lg text-red-700">Step {selectedStep.step}</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setSelectedStep(null)}
+                        className="text-3xl text-gray-500 hover:text-red-700 transition"
+                      >
+                        ×
+                      </button>
+                    </div>
+
+                    <p className="text-gray-800 text-base leading-relaxed">
+                      {selectedStep.fullDesc}
+                    </p>
+
+                    <div className="text-center mt-8">
+                      <button
+                        onClick={() => setSelectedStep(null)}
+                        className="px-6 py-3 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition shadow-md"
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
                 </div>
-              ))}
+              </div>
+            )}
+
+            <div className="text-center mt-12">
+              <button
+                onClick={() => handleRequestBlood(false)}
+                className="inline-flex items-center gap-3 px-8 py-4 bg-gradient-to-r from-red-600 to-rose-600 text-white font-bold rounded-xl hover:shadow-xl hover:scale-[1.03] transition-all duration-300 shadow-lg"
+              >
+                <FaHeartbeat className="text-2xl" />
+                Join the Network Now
+              </button>
             </div>
           </div>
         </section>
 
         {/* Testimonials Section */}
-        <section id="testimonials" ref={testimonialsRef} className="bg-white relative overflow-hidden py-14 md:py-20">
-          <div
-            className={`max-w-4xl mx-auto text-center mb-10 transition-all duration-1000 ${testimonialsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}
-          >
-            <p className="text-sm font-semibold text-red-700 mb-2 uppercase tracking-wide">Testimonials</p>
-            <h2 className="text-3xl md:text-4xl font-bold text-gray-900">Stories from our community</h2>
+        <section id="testimonials" ref={testimonialsRef} className="bg-gradient-to-br from-red-50 via-white to-rose-50 relative overflow-hidden py-14 md:py-20">
+          <div className="absolute inset-0 pointer-events-none">
+            <div className="absolute -top-20 -right-20 w-96 h-96 bg-red-100 rounded-full blur-3xl opacity-30 animate-float-slow" />
+            <div className="absolute bottom-0 -left-20 w-80 h-80 bg-rose-100 rounded-full blur-3xl opacity-20 animate-float" />
           </div>
-          <div className="container mx-auto px-4 grid md:grid-cols-3 gap-8">
-            {[
-              { name: 'Anita R.', role: 'Donor', msg: 'I saved 3 lives in one month. The platform is amazing and super easy to use!' },
-              { name: 'Ramesh K.', role: 'Receiver', msg: 'Found a donor within minutes. BloodBridge made a stressful time easier.' },
-              { name: 'City Hospital', role: 'Partner', msg: 'Our hospital inventory is always up to date. Coordination has never been simpler.' },
-            ].map((t, idx) => (
-              <div
-                key={idx}
-                className={`bg-red-50 rounded-2xl shadow-lg p-6 transition-all duration-700 hover:shadow-xl hover:-translate-y-2 transform ${testimonialsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}
-                style={{ transitionDelay: `${idx * 200}ms` }}
-              >
-                <p className="text-gray-800 italic mb-4">"{t.msg}"</p>
-                <p className="font-semibold text-gray-900">{t.name}</p>
-                <p className="text-xs text-gray-500">{t.role}</p>
+
+          <div className="relative container mx-auto px-4">
+            <div
+              className={`text-center mb-12 transition-all duration-1000 ${testimonialsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}
+            >
+              <p className="text-sm font-semibold text-red-700 mb-2 uppercase tracking-wide">Real Stories</p>
+              <h2 className="text-4xl md:text-5xl font-extrabold text-gray-900 mb-4">
+                Stories from our community
+              </h2>
+              <p className="text-xl text-gray-700 max-w-3xl mx-auto">
+                Hear from real donors, receivers, and hospitals who are making a difference every day.
+              </p>
+            </div>
+
+            <div className="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto">
+              {testimonials.map((t, idx) => {
+                const shortMsg = t.message.length > 120 ? t.message.substring(0, 120) + '...' : t.message;
+
+                return (
+                  <div
+                    key={idx}
+                    className={`bg-white rounded-3xl shadow-xl border border-red-100 p-8 transition-all duration-500 hover:shadow-2xl hover:-translate-y-3 hover:border-red-200 relative overflow-hidden ${testimonialsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}
+                    style={{ transitionDelay: `${idx * 150}ms` }}
+                  >
+                    {t.verified && (
+                      <div className="absolute top-6 right-6 bg-red-50 text-red-700 text-xs font-bold px-3 py-1 rounded-full flex items-center gap-1 shadow-sm">
+                        <FaCheckCircle className="text-red-600" />
+                        Verified
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-4 mb-6">
+                      <img
+                        src={t.photo}
+                        alt={t.name}
+                        className="w-20 h-20 rounded-full object-cover border-4 border-red-100 shadow-md"
+                      />
+                      <div>
+                        <p className="font-bold text-xl text-gray-900">{t.name}</p>
+                        <p className="text-base text-red-700">{t.role}</p>
+                      </div>
+                    </div>
+
+                    {t.location && (
+                      <span className="inline-block mb-4 px-4 py-1.5 bg-red-50 text-red-700 rounded-full text-sm font-medium">
+                        {t.location}
+                      </span>
+                    )}
+
+                    <p className="text-gray-800 leading-relaxed text-base mb-6">
+                      "{shortMsg}"
+                    </p>
+
+                    {t.message.length > 120 && (
+                      <button
+                        onClick={() => setSelectedTestimonial(t)}
+                        className="text-red-600 font-semibold hover:text-red-800 transition flex items-center gap-2 text-base group"
+                      >
+                        Read full story
+                        <FaArrowRight className="text-sm group-hover:translate-x-1 transition-transform" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {selectedTestimonial && (
+              <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-3xl max-w-3xl w-full max-h-[90vh] overflow-y-auto shadow-2xl border border-red-100 animate-scale-in">
+                  <div className="p-8 md:p-12">
+                    <div className="flex justify-between items-start mb-8">
+                      <div className="flex items-center gap-5">
+                        <img
+                          src={selectedTestimonial.photo}
+                          alt={selectedTestimonial.name}
+                          className="w-24 h-24 rounded-full object-cover border-4 border-red-100 shadow-lg"
+                        />
+                        <div>
+                          <h3 className="text-3xl font-bold text-gray-900">{selectedTestimonial.name}</h3>
+                          <p className="text-xl text-red-700">{selectedTestimonial.role}</p>
+                          <span className="inline-block mt-2 px-4 py-1 bg-red-50 text-red-700 rounded-full text-sm font-medium">
+                            {selectedTestimonial.location}
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setSelectedTestimonial(null)}
+                        className="text-4xl text-gray-500 hover:text-red-700 transition"
+                      >
+                        ×
+                      </button>
+                    </div>
+
+                    <p className="text-gray-800 text-lg leading-relaxed mb-8">
+                      "{selectedTestimonial.message}"
+                    </p>
+
+                    <div className="text-center">
+                      <button
+                        onClick={() => setSelectedTestimonial(null)}
+                        className="px-8 py-4 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition shadow-lg"
+                      >
+                        Close
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
-            ))}
+            )}
           </div>
         </section>
 
@@ -361,13 +592,29 @@ function Home() {
               {pastEvents.slice(0, showAllEvents ? 6 : 3).map((event, idx) => (
                 <div
                   key={idx}
-                  className="group relative cursor-pointer overflow-hidden rounded-3xl shadow-lg hover:shadow-2xl transition-all duration-500 hover:-translate-y-3"
+                  className="group relative cursor-pointer overflow-hidden rounded-3xl shadow-xl border border-red-100 hover:shadow-2xl transition-all duration-500 hover:-translate-y-3"
                 >
-                  <img
-                    src={event.src}
-                    alt={event.alt}
-                    className="w-full h-80 object-cover group-hover:scale-110 transition-transform duration-700"
-                  />
+                  {event.videoUrl ? (
+                    <div className="aspect-video">
+                      <iframe
+                        width="100%"
+                        height="100%"
+                        src={event.videoUrl}
+                        title={event.title}
+                        frameBorder="0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                        allowFullScreen
+                        className="group-hover:scale-105 transition-transform duration-700"
+                      ></iframe>
+                    </div>
+                  ) : (
+                    <img
+                      src={event.src}
+                      alt={event.alt}
+                      className="w-full h-80 object-cover group-hover:scale-110 transition-transform duration-700"
+                    />
+                  )}
+
                   <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 flex items-end p-6">
                     <div>
                       <p className="text-white font-bold text-lg">{event.title}</p>
@@ -403,7 +650,6 @@ function Home() {
             </div>
 
             <div className="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto">
-              {/* Basic Plan */}
               <div className="relative bg-white rounded-3xl shadow-lg hover:shadow-2xl transition-all duration-500 hover:-translate-y-3 border border-red-200 p-8">
                 <div className="text-center mb-8">
                   <h3 className="text-2xl font-bold text-gray-900 mb-6">Basic</h3>
@@ -433,7 +679,6 @@ function Home() {
                 </button>
               </div>
 
-              {/* Standard Plan - Popular */}
               <div className="relative bg-gradient-to-br from-red-600 to-red-700 rounded-3xl shadow-2xl hover:shadow-3xl transition-all duration-500 hover:-translate-y-4 transform scale-105 z-10 text-white p-8">
                 <div className="absolute -top-5 left-1/2 -translate-x-1/2">
                   <span className="inline-block px-4 py-2 bg-red-500 text-white text-sm font-bold rounded-full shadow-lg">
@@ -469,7 +714,6 @@ function Home() {
                 </button>
               </div>
 
-              {/* Advanced Plan */}
               <div className="relative bg-white rounded-3xl shadow-lg hover:shadow-2xl transition-all duration-500 hover:-translate-y-3 border border-red-200 p-8">
                 <div className="text-center mb-8">
                   <h3 className="text-2xl font-bold text-gray-900 mb-6">Advanced</h3>

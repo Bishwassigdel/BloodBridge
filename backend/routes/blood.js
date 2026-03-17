@@ -16,6 +16,13 @@ import {
   getInventoryLogs,
 } from '../controllers/inventoryController.js';
 
+import {
+  createBloodTransfer,
+  acceptBloodTransfer,
+  rejectBloodTransfer,
+  getTransferHistory,
+} from '../controllers/transferController.js';
+
 const router = express.Router();
 
 router.use(protect);
@@ -36,5 +43,11 @@ router.route('/inventory')
   .get(getInventory);
 
 router.get('/inventory-logs', getInventoryLogs);
+
+// ── Blood Transfer Routes ───────────────────────────────────────────────
+router.post('/transfer/create', createBloodTransfer);
+router.post('/transfer/accept', acceptBloodTransfer);
+router.post('/transfer/reject', rejectBloodTransfer);
+router.get('/transfer/history', getTransferHistory);
 
 export default router;
