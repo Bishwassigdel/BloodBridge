@@ -6,6 +6,7 @@ import {
   createBloodRequest,
   getMyRequests,
   acceptBloodRequest,
+  fulfillBloodRequest,
   getMatchingRequests,
 } from '../controllers/bloodController.js';
 
@@ -31,6 +32,7 @@ router.post('/request', createBloodRequest);
 router.get('/my-requests', getMyRequests);
 router.get('/matching-requests', getMatchingRequests);
 router.patch('/:id/accept', acceptBloodRequest);
+router.patch('/:id/fulfill', fulfillBloodRequest);
 
 router.post('/donate', recordDonation);
 router.get('/my-donations', getDonationHistory);

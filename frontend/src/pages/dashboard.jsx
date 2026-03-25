@@ -2,6 +2,9 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import DonorEligibility from '../components/DonorEligibility';
+import Toast, { useToast } from '../components/Toast';
+import LifeSaverModal from '../components/LifeSaverModal';
 import {
   FaHeartbeat,
   FaClipboardList,
@@ -11,6 +14,7 @@ import {
   FaBell,
   FaBars,
   FaTimes,
+  FaLock,
   FaPlusCircle,
   FaPhone,
   FaMapMarkerAlt,
@@ -22,6 +26,7 @@ import {
   FaHospital,
   FaTint,
   FaExclamationCircle,
+  FaHistory,
 } from 'react-icons/fa';
 
 const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
@@ -55,6 +60,14 @@ const NOTIF_CONFIG = {
     label: 'Accepted',
     labelBg: 'bg-green-100 text-green-700',
   },
+  request_fulfilled: {
+    icon: '🎉',
+    bg: 'bg-purple-50',
+    border: 'border-purple-200',
+    accent: 'bg-purple-500',
+    label: 'Life Saved!',
+    labelBg: 'bg-purple-100 text-purple-700',
+  },
   default: {
     icon: '🔔',
     bg: 'bg-blue-50',
@@ -78,6 +91,12 @@ function Dashboard() {
   const [notifications, setNotifications] = useState([]);
   const [myRequests, setMyRequests] = useState([]);
 
+  // Toast notifications
+  const toast = useToast();
+
+  // LifeSaver modal (shown after donor accepts)
+  const [lifeSaverModal, setLifeSaverModal] = useState({ open: false, request: null });
+
   const [requestForm, setRequestForm] = useState({
     hospital: '',
     bloodGroup: user?.bloodGroup || '',
@@ -98,6 +117,7 @@ function Dashboard() {
 
   const [loadingAccept, setLoadingAccept] = useState(null);
   const [loadingDecline, setLoadingDecline] = useState(null);
+  const [loadingFulfill, setLoadingFulfill] = useState(null);
   const [declinedIds, setDeclinedIds] = useState(new Set());
 
   const isDonor = user?.role === 'donor';
@@ -134,7 +154,12 @@ function Dashboard() {
 
       if (isDonor) {
         if (results[idx++].status === 'fulfilled') {
-          setMatchingRequests(results[idx - 1].value.data.requests || []);
+          const matchData = results[idx - 1].value.data;
+          setMatchingRequests(matchData.requests || []);
+          // Sync availability from backend (auto-reset after 56 days)
+          if (typeof matchData.donorIsAvailable === 'boolean') {
+            setIsAvailable(matchData.donorIsAvailable);
+          }
         }
         if (results[idx++].status === 'fulfilled') {
           setDonations(results[idx - 1].value.data.donations || []);
@@ -172,22 +197,32 @@ function Dashboard() {
   };
 
   const handleAcceptRequest = async (requestId) => {
-    if (!window.confirm('Accept this blood request?')) return;
-
     setLoadingAccept(requestId);
+
+    // Grab request details for the modal before accepting
+    const acceptedReq = matchingRequests.find(r => r._id === requestId);
 
     try {
       await axios.patch(`/api/blood/${requestId}/accept`, {});
 
-      const [reqRes, notifRes] = await Promise.all([
+      const [reqRes, notifRes, donRes] = await Promise.all([
         axios.get('/api/blood/matching-requests'),
         axios.get('/api/notifications'),
+        axios.get('/api/blood/my-donations'),
       ]);
 
       setMatchingRequests(reqRes.data.requests || []);
       setNotifications(notifRes.data.notifications || []);
+      setDonations(donRes.data.donations || []);
+      setIsAvailable(false);
+
+      // Show the LifeSaver modal 🎉
+      setLifeSaverModal({ open: true, request: acceptedReq || null });
     } catch (err) {
-      alert(err.response?.data?.message || 'Failed to accept request. Try again.');
+      toast.error(
+        'Could not accept request',
+        err.response?.data?.message || 'Please try again.'
+      );
     } finally {
       setLoadingAccept(null);
     }
@@ -197,15 +232,39 @@ function Dashboard() {
     setLoadingDecline(requestId);
     try {
       await axios.patch(`/api/blood/${requestId}/decline`, {});
-      // Optimistically remove from list
       setDeclinedIds(prev => new Set([...prev, requestId]));
       setMatchingRequests(prev => prev.filter(r => r._id !== requestId));
     } catch (err) {
-      // Even if the endpoint doesn't exist yet, hide the card locally
+      // Even if endpoint doesn't exist yet, hide the card locally
       setDeclinedIds(prev => new Set([...prev, requestId]));
       setMatchingRequests(prev => prev.filter(r => r._id !== requestId));
     } finally {
       setLoadingDecline(null);
+    }
+  };
+
+  const handleFulfillRequest = async (requestId) => {
+    setLoadingFulfill(requestId);
+    try {
+      await axios.patch(`/api/blood/${requestId}/fulfill`, {});
+
+      // Update the request status locally — no need to refetch all
+      setMyRequests(prev =>
+        prev.map(r => r._id === requestId ? { ...r, status: 'fulfilled' } : r)
+      );
+
+      toast.success(
+        'Blood received! 🎉',
+        'Thank you for confirming. Your donor has been notified with a heartfelt thank-you.',
+        6000
+      );
+    } catch (err) {
+      toast.error(
+        'Could not update',
+        err.response?.data?.message || 'Please try again.'
+      );
+    } finally {
+      setLoadingFulfill(null);
     }
   };
 
@@ -248,7 +307,13 @@ function Dashboard() {
       const res = await axios.post('/api/blood/request', requestForm);
 
       if (res.data.success) {
-        setRequestSuccess('Blood request created successfully!');
+        // Show success toast
+        toast.success(
+          'Blood request submitted! 🙏',
+          'Thank you for reaching out. Matching donors have been notified and will contact you soon.',
+          6000
+        );
+
         setRequestForm({
           hospital: '',
           bloodGroup: user?.bloodGroup || '',
@@ -306,6 +371,17 @@ function Dashboard() {
   }
 
   return (
+    <>
+    {/* Global toast stack */}
+    <Toast toasts={toast.toasts} remove={toast.remove} />
+
+    {/* LifeSaver modal — shown after donor accepts */}
+    <LifeSaverModal
+      open={lifeSaverModal.open}
+      request={lifeSaverModal.request}
+      onClose={() => setLifeSaverModal({ open: false, request: null })}
+    />
+
     <div className="min-h-screen bg-gradient-to-br from-red-50 via-rose-50 to-white flex">
       {/* Mobile toggle */}
       <button
@@ -346,6 +422,12 @@ function Dashboard() {
               panel: 'requests',
               badge: isDonor && newRequestCount > 0 ? newRequestCount : null,
             },
+            ...(isDonor ? [{
+              name: 'History',
+              icon: FaHistory,
+              panel: 'history',
+              badge: null,
+            }] : []),
             {
               name: 'Notifications',
               icon: FaBell,
@@ -421,17 +503,8 @@ function Dashboard() {
               Welcome back, <span className="text-red-600">{user?.username || 'User'}</span>
             </h2>
 
-            <div className="grid md:grid-cols-3 gap-6">
-              <div className="bg-white p-6 rounded-2xl shadow border border-red-100">
-                <h3 className="text-base font-medium text-gray-700 mb-3">Availability</h3>
-                <div className="flex items-center gap-4">
-                  <div className={`w-5 h-5 rounded-full ${isAvailable ? 'bg-green-500' : 'bg-gray-400'} shadow`}></div>
-                  <span className="text-xl font-semibold">
-                    {isAvailable ? 'Available' : 'Not Available'}
-                  </span>
-                </div>
-              </div>
-
+            {/* Stat cards */}
+            <div className="grid md:grid-cols-2 gap-6">
               <div className="bg-white p-6 rounded-2xl shadow border border-red-100">
                 <h3 className="text-base font-medium text-gray-700 mb-3">Notifications</h3>
                 <div className="text-4xl font-bold text-red-600">{unreadCount}</div>
@@ -447,6 +520,17 @@ function Dashboard() {
                 </div>
               </div>
             </div>
+
+            {/* Eligibility overview for donors */}
+            {isDonor && (
+              <DonorEligibility
+                section="overview"
+                user={user}
+                donations={donations}
+                onAvailabilityChange={(val) => setIsAvailable(val)}
+                onDonationRecorded={(freshDonations) => setDonations(freshDonations)}
+              />
+            )}
           </div>
         )}
 
@@ -860,49 +944,58 @@ function Dashboard() {
 
                           {/* Accept + Decline buttons (donor only, pending only) */}
                           {isDonor && isPending && req.requester?.toString() !== user._id?.toString() && (
-                            <div className="mt-4 flex gap-3">
-                              {/* Decline */}
-                              <button
-                                onClick={() => handleDeclineRequest(req._id)}
-                                disabled={loadingDecline === req._id || loadingAccept === req._id}
-                                className={`flex-1 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 border-2 transition-all duration-200 ${
-                                  loadingDecline === req._id
-                                    ? 'opacity-60 cursor-not-allowed border-gray-200 text-gray-400'
-                                    : 'border-gray-200 text-gray-500 hover:border-red-300 hover:text-red-500 hover:bg-red-50 active:scale-[0.98]'
-                                }`}
-                              >
-                                {loadingDecline === req._id ? (
-                                  <FaSpinner className="animate-spin text-sm" />
-                                ) : (
-                                  <>
-                                    <FaTimes className="text-sm" />
-                                    Decline
-                                  </>
-                                )}
-                              </button>
+                            <div className="mt-4">
+                              {!isAvailable ? (
+                                /* ── Donor in cooldown: show lock, not accept button ── */
+                                (() => {
+                                  const lastDon = user?.lastDonation ? new Date(user.lastDonation) : null;
+                                  const daysLeft = lastDon ? Math.max(0, Math.ceil(56 - (Date.now() - lastDon) / 86400000)) : 0;
+                                  const nextDate = lastDon ? new Date(lastDon.getTime() + 56 * 86400000) : null;
+                                  return (
+                                    <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-xl px-4 py-3">
+                                      <FaLock className="text-orange-500 text-base flex-shrink-0 mt-0.5" />
+                                      <div>
+                                        <p className="text-sm font-bold text-orange-700">You're in a 56-day cooldown</p>
+                                        <p className="text-xs text-orange-600 mt-0.5">
+                                          You donated recently. You can donate again in <strong>{daysLeft} day{daysLeft !== 1 ? 's' : ''}</strong>
+                                          {nextDate ? ` (${nextDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })})` : ''}.
+                                        </p>
+                                      </div>
+                                    </div>
+                                  );
+                                })()
+                              ) : (
+                                /* ── Eligible: show decline + accept ── */
+                                <div className="flex gap-3">
+                                  <button
+                                    onClick={() => handleDeclineRequest(req._id)}
+                                    disabled={loadingDecline === req._id || loadingAccept === req._id}
+                                    className={`flex-1 py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 border-2 transition-all duration-200 ${
+                                      loadingDecline === req._id
+                                        ? 'opacity-60 cursor-not-allowed border-gray-200 text-gray-400'
+                                        : 'border-gray-200 text-gray-500 hover:border-red-300 hover:text-red-500 hover:bg-red-50 active:scale-[0.98]'
+                                    }`}
+                                  >
+                                    {loadingDecline === req._id
+                                      ? <FaSpinner className="animate-spin text-sm" />
+                                      : <><FaTimes className="text-sm" /> Decline</>}
+                                  </button>
 
-                              {/* Accept */}
-                              <button
-                                onClick={() => handleAcceptRequest(req._id)}
-                                disabled={loadingAccept === req._id || loadingDecline === req._id}
-                                className={`flex-[2] py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all duration-200 shadow-sm ${
-                                  loadingAccept === req._id
-                                    ? 'opacity-60 cursor-not-allowed bg-green-400 text-white'
-                                    : 'bg-green-600 hover:bg-green-700 text-white hover:shadow-md active:scale-[0.98]'
-                                }`}
-                              >
-                                {loadingAccept === req._id ? (
-                                  <>
-                                    <FaSpinner className="animate-spin text-sm" />
-                                    Accepting...
-                                  </>
-                                ) : (
-                                  <>
-                                    <FaCheckCircle className="text-sm" />
-                                    Accept & Donate
-                                  </>
-                                )}
-                              </button>
+                                  <button
+                                    onClick={() => handleAcceptRequest(req._id)}
+                                    disabled={loadingAccept === req._id || loadingDecline === req._id}
+                                    className={`flex-[2] py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all duration-200 shadow-sm ${
+                                      loadingAccept === req._id
+                                        ? 'opacity-60 cursor-not-allowed bg-green-400 text-white'
+                                        : 'bg-green-600 hover:bg-green-700 text-white hover:shadow-md active:scale-[0.98]'
+                                    }`}
+                                  >
+                                    {loadingAccept === req._id
+                                      ? <><FaSpinner className="animate-spin text-sm" /> Accepting...</>
+                                      : <><FaCheckCircle className="text-sm" /> Accept & Donate</>}
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           )}
 
@@ -912,6 +1005,51 @@ function Dashboard() {
                               <FaCheckCircle className="text-blue-500 text-sm flex-shrink-0" />
                               <p className="text-xs font-semibold text-blue-700">
                                 You accepted this request — please contact the patient
+                              </p>
+                            </div>
+                          )}
+
+                          {/* ── Mark as Received (receiver, accepted only) ── */}
+                          {!isDonor && isAccepted && (
+                            <div className="mt-4 space-y-2">
+                              <div className="flex items-start gap-2 bg-blue-50 border border-blue-100 rounded-xl px-4 py-3">
+                                <FaCheckCircle className="text-blue-500 text-sm flex-shrink-0 mt-0.5" />
+                                <div>
+                                  <p className="text-xs font-bold text-blue-700">A donor has accepted your request!</p>
+                                  {req.acceptedBy?.phone && (
+                                    <p className="text-xs text-blue-600 mt-0.5">
+                                      Contact: <span className="font-semibold">{req.acceptedBy.username}</span> · {req.acceptedBy.phone}
+                                    </p>
+                                  )}
+                                  {!req.acceptedBy?.phone && req.acceptedBy?.username && (
+                                    <p className="text-xs text-blue-600 mt-0.5">Donor: <span className="font-semibold">{req.acceptedBy.username}</span></p>
+                                  )}
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => handleFulfillRequest(req._id)}
+                                disabled={loadingFulfill === req._id}
+                                className={`w-full py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all duration-200 ${
+                                  loadingFulfill === req._id
+                                    ? 'bg-green-400 cursor-not-allowed text-white opacity-70'
+                                    : 'bg-green-600 hover:bg-green-700 text-white shadow-sm hover:shadow-md active:scale-[0.98]'
+                                }`}
+                              >
+                                {loadingFulfill === req._id ? (
+                                  <><FaSpinner className="animate-spin text-sm" /> Confirming...</>
+                                ) : (
+                                  <><FaCheckCircle className="text-sm" /> I Received the Blood ✓</>
+                                )}
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Fulfilled confirmation (receiver) */}
+                          {!isDonor && isFulfilled && (
+                            <div className="mt-4 flex items-center gap-2 bg-green-50 border border-green-200 rounded-xl px-4 py-2.5">
+                              <FaCheckCircle className="text-green-500 text-base flex-shrink-0" />
+                              <p className="text-xs font-semibold text-green-700">
+                                ✅ You confirmed receiving blood. Your donor has been thanked!
                               </p>
                             </div>
                           )}
@@ -948,6 +1086,17 @@ function Dashboard() {
             </div>
           );
         })()}
+
+        {/* Donation History */}
+        {activePanel === 'history' && isDonor && (
+          <DonorEligibility
+            section="history"
+            user={user}
+            donations={donations}
+            onAvailabilityChange={(val) => setIsAvailable(val)}
+            onDonationRecorded={(freshDonations) => setDonations(freshDonations)}
+          />
+        )}
 
         {/* Notifications */}
         {activePanel === 'notifications' && (
@@ -1133,6 +1282,7 @@ function Dashboard() {
         )}
       </main>
     </div>
+    </>
   );
 }
 

@@ -1,6 +1,7 @@
 // src/pages/Home.jsx
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import axios from 'axios';
 import {
   FaHeartbeat,
   FaSearch,
@@ -14,6 +15,8 @@ import {
   FaUserPlus,
   FaHandHoldingHeart,
   FaExchangeAlt,
+  FaPen,
+  FaTimes,
 } from 'react-icons/fa';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
@@ -26,8 +29,16 @@ function Home() {
 
   const [scrollY, setScrollY] = useState(0);
   const [showAllEvents, setShowAllEvents] = useState(false);
-  const [selectedTestimonial, setSelectedTestimonial] = useState(null);
   const [selectedStep, setSelectedStep] = useState(null);
+
+  // Community stories
+  const [showShareModal, setShowShareModal] = useState(false);
+  const [storyForm, setStoryForm] = useState({ title: '', message: '' });
+  const [storyError, setStoryError] = useState('');
+  const [storySuccess, setStorySuccess] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [communityStories, setCommunityStories] = useState([]);
+  const [selectedCommunityStory, setSelectedCommunityStory] = useState(null);
 
   const navigate = useNavigate();
 
@@ -46,6 +57,53 @@ function Home() {
     window.addEventListener('scroll', handleScroll);
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
+
+  // Fetch community stories on mount
+  useEffect(() => {
+    axios.get('/api/stories')
+      .then(res => { if (res.data.success) setCommunityStories(res.data.stories); })
+      .catch(() => {});
+  }, []);
+
+  const handleShareStory = async (e) => {
+    e.preventDefault();
+    setStoryError('');
+    if (!storyForm.title.trim() || !storyForm.message.trim()) {
+      setStoryError('Please fill in both the title and your story.');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res = await axios.post('/api/stories', storyForm);
+      if (res.data.success) {
+        const updated = res.data.story;
+        setCommunityStories(prev => {
+          const exists = prev.find(s => s.author === updated.author || s._id === updated._id);
+          if (exists) return prev.map(s => (s._id === updated._id || s.author === updated.author) ? updated : s);
+          return [updated, ...prev];
+        });
+        setStorySuccess('Your story has been shared! Thank you.');
+        setStoryForm({ title: '', message: '' });
+        setTimeout(() => { setShowShareModal(false); setStorySuccess(''); }, 2000);
+      }
+    } catch (err) {
+      setStoryError(err.response?.data?.message || 'Failed to share story. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const getRoleBadgeColor = (role) => {
+    if (role === 'donor') return 'bg-red-50 text-red-700';
+    if (role === 'hospital') return 'bg-blue-50 text-blue-700';
+    return 'bg-green-50 text-green-700';
+  };
+
+  const getRoleLabel = (role) => {
+    if (role === 'donor') return 'Donor';
+    if (role === 'hospital') return 'Hospital';
+    return 'Receiver';
+  };
 
   const scrollToSection = (id) => {
     const el = document.getElementById(id);
@@ -111,32 +169,6 @@ function Home() {
     },
   ];
 
-  const testimonials = [
-    {
-      name: "Anita R.",
-      role: "Donor",
-      location: "Kathmandu",
-      photo: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?ixlib=rb-4.0.3&auto=format&fit=crop&w=300&q=80",
-      message: "I donated for the first time through BloodBridge and saved a child's life. The platform made it so easy and safe. I never thought donating could be this simple and meaningful. Now I donate regularly and encourage my friends too. Feeling proud to be part of this life-saving community.",
-      verified: true,
-    },
-    {
-      name: "Ramesh K.",
-      role: "Receiver",
-      location: "Pokhara",
-      photo: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?ixlib=rb-4.0.3&auto=format&fit=crop&w=300&q=80",
-      message: "My family was in panic during an emergency. Found a donor in just 20 minutes. BloodBridge literally saved my mother's life. The coordination was perfect, the donor was very kind, and the whole process was stress-free. Grateful beyond words.",
-      verified: true,
-    },
-    {
-      name: "Dr. Sita M.",
-      role: "Doctor, Civil Hospital",
-      location: "Birgunj",
-      photo: "https://images.unsplash.com/photo-1559839734-2b71ea197ec2?ixlib=rb-4.0.3&auto=format&fit=crop&w=300&q=80",
-      message: "Our hospital now gets requests fulfilled much faster thanks to real-time matching. BloodBridge has reduced our emergency shortages by over 60%. The platform is reliable, secure, and truly makes a difference in patient care. Highly recommend for all medical institutions.",
-      verified: true,
-    },
-  ];
 
   const howItWorksSteps = [
     {
@@ -475,95 +507,107 @@ function Home() {
               </p>
             </div>
 
-            <div className="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto">
-              {testimonials.map((t, idx) => {
-                const shortMsg = t.message.length > 120 ? t.message.substring(0, 120) + '...' : t.message;
-
-                return (
-                  <div
-                    key={idx}
-                    className={`bg-white rounded-3xl shadow-xl border border-red-100 p-8 transition-all duration-500 hover:shadow-2xl hover:-translate-y-3 hover:border-red-200 relative overflow-hidden ${testimonialsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}
-                    style={{ transitionDelay: `${idx * 150}ms` }}
-                  >
-                    {t.verified && (
-                      <div className="absolute top-6 right-6 bg-red-50 text-red-700 text-xs font-bold px-3 py-1 rounded-full flex items-center gap-1 shadow-sm">
-                        <FaCheckCircle className="text-red-600" />
-                        Verified
-                      </div>
-                    )}
-
-                    <div className="flex items-center gap-4 mb-6">
-                      <img
-                        src={t.photo}
-                        alt={t.name}
-                        className="w-20 h-20 rounded-full object-cover border-4 border-red-100 shadow-md"
-                      />
-                      <div>
-                        <p className="font-bold text-xl text-gray-900">{t.name}</p>
-                        <p className="text-base text-red-700">{t.role}</p>
-                      </div>
-                    </div>
-
-                    {t.location && (
-                      <span className="inline-block mb-4 px-4 py-1.5 bg-red-50 text-red-700 rounded-full text-sm font-medium">
-                        {t.location}
-                      </span>
-                    )}
-
-                    <p className="text-gray-800 leading-relaxed text-base mb-6">
-                      "{shortMsg}"
-                    </p>
-
-                    {t.message.length > 120 && (
-                      <button
-                        onClick={() => setSelectedTestimonial(t)}
-                        className="text-red-600 font-semibold hover:text-red-800 transition flex items-center gap-2 text-base group"
-                      >
-                        Read full story
-                        <FaArrowRight className="text-sm group-hover:translate-x-1 transition-transform" />
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            {selectedTestimonial && (
-              <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-                <div className="bg-white rounded-3xl max-w-3xl w-full max-h-[90vh] overflow-y-auto shadow-2xl border border-red-100 animate-scale-in">
-                  <div className="p-8 md:p-12">
-                    <div className="flex justify-between items-start mb-8">
-                      <div className="flex items-center gap-5">
-                        <img
-                          src={selectedTestimonial.photo}
-                          alt={selectedTestimonial.name}
-                          className="w-24 h-24 rounded-full object-cover border-4 border-red-100 shadow-lg"
-                        />
+            {/* Live Community Stories */}
+            {communityStories.length === 0 ? (
+              <div className="text-center py-16 text-gray-400">
+                <div className="text-6xl mb-4">💬</div>
+                <p className="text-lg font-medium">No stories yet. Be the first to share yours!</p>
+              </div>
+            ) : (
+              <div className="grid md:grid-cols-3 gap-8 max-w-6xl mx-auto">
+                {communityStories.map((story, idx) => {
+                  const shortMsg = story.message.length > 120 ? story.message.substring(0, 120) + '...' : story.message;
+                  const initials = story.name ? story.name.charAt(0).toUpperCase() : '?';
+                  return (
+                    <div
+                      key={story._id}
+                      className={`bg-white rounded-3xl shadow-xl border border-red-100 p-8 transition-all duration-500 hover:shadow-2xl hover:-translate-y-3 hover:border-red-200 relative overflow-hidden ${testimonialsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}
+                      style={{ transitionDelay: `${idx * 150}ms` }}
+                    >
+                      <div className="flex items-center gap-4 mb-4">
+                        {story.avatar ? (
+                          <img src={story.avatar} alt={story.name} className="w-16 h-16 rounded-full object-cover border-4 border-red-100 shadow-md" />
+                        ) : (
+                          <div className="w-16 h-16 rounded-full bg-red-100 border-4 border-red-200 flex items-center justify-center text-red-700 font-bold text-2xl shadow-md">
+                            {initials}
+                          </div>
+                        )}
                         <div>
-                          <h3 className="text-3xl font-bold text-gray-900">{selectedTestimonial.name}</h3>
-                          <p className="text-xl text-red-700">{selectedTestimonial.role}</p>
-                          <span className="inline-block mt-2 px-4 py-1 bg-red-50 text-red-700 rounded-full text-sm font-medium">
-                            {selectedTestimonial.location}
+                          <p className="font-bold text-gray-900">{story.name}</p>
+                          <span className={`text-xs font-semibold px-3 py-1 rounded-full ${getRoleBadgeColor(story.role)}`}>
+                            {getRoleLabel(story.role)}
                           </span>
                         </div>
                       </div>
-                      <button
-                        onClick={() => setSelectedTestimonial(null)}
-                        className="text-4xl text-gray-500 hover:text-red-700 transition"
-                      >
-                        ×
+                      {story.location && (
+                        <span className="inline-block mb-3 px-3 py-1 bg-red-50 text-red-700 rounded-full text-xs font-medium">
+                          📍 {story.location}
+                        </span>
+                      )}
+                      <p className="font-semibold text-gray-800 mb-2">{story.title}</p>
+                      <p className="text-gray-600 text-sm leading-relaxed mb-4">"{shortMsg}"</p>
+                      {story.message.length > 120 && (
+                        <button
+                          onClick={() => setSelectedCommunityStory(story)}
+                          className="text-red-600 font-semibold hover:text-red-800 transition flex items-center gap-2 text-sm group"
+                        >
+                          Read full story
+                          <FaArrowRight className="text-xs group-hover:translate-x-1 transition-transform" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Share Story Button — bottom */}
+            <div className="text-center mt-10">
+              <button
+                onClick={() => {
+                  if (!user) { navigate('/login'); return; }
+                  setShowShareModal(true);
+                  setStoryError(''); setStorySuccess('');
+                }}
+                className="inline-flex items-center gap-2 px-8 py-4 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-xl shadow-lg transition-all transform hover:scale-105 text-lg"
+              >
+                <FaPen className="text-sm" />
+                Share Your Story
+              </button>
+            </div>
+
+            {/* Community Story Full Read Modal */}
+            {selectedCommunityStory && (
+              <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-3xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl border border-red-100">
+                  <div className="p-8">
+                    <div className="flex justify-between items-start mb-6">
+                      <div className="flex items-center gap-4">
+                        {selectedCommunityStory.avatar ? (
+                          <img src={selectedCommunityStory.avatar} alt={selectedCommunityStory.name} className="w-16 h-16 rounded-full object-cover border-4 border-red-100" />
+                        ) : (
+                          <div className="w-16 h-16 rounded-full bg-red-100 border-4 border-red-200 flex items-center justify-center text-red-700 font-bold text-2xl">
+                            {selectedCommunityStory.name?.charAt(0).toUpperCase()}
+                          </div>
+                        )}
+                        <div>
+                          <h3 className="text-xl font-bold text-gray-900">{selectedCommunityStory.name}</h3>
+                          <span className={`text-xs font-semibold px-3 py-1 rounded-full ${getRoleBadgeColor(selectedCommunityStory.role)}`}>
+                            {getRoleLabel(selectedCommunityStory.role)}
+                          </span>
+                          {selectedCommunityStory.location && (
+                            <p className="text-sm text-gray-500 mt-1">📍 {selectedCommunityStory.location}</p>
+                          )}
+                        </div>
+                      </div>
+                      <button onClick={() => setSelectedCommunityStory(null)} className="text-3xl text-gray-400 hover:text-red-600 transition">
+                        <FaTimes />
                       </button>
                     </div>
-
-                    <p className="text-gray-800 text-lg leading-relaxed mb-8">
-                      "{selectedTestimonial.message}"
-                    </p>
-
-                    <div className="text-center">
-                      <button
-                        onClick={() => setSelectedTestimonial(null)}
-                        className="px-8 py-4 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition shadow-lg"
-                      >
+                    <h4 className="text-lg font-bold text-gray-800 mb-4">{selectedCommunityStory.title}</h4>
+                    <p className="text-gray-700 leading-relaxed">"{selectedCommunityStory.message}"</p>
+                    <div className="text-center mt-8">
+                      <button onClick={() => setSelectedCommunityStory(null)} className="px-8 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition">
                         Close
                       </button>
                     </div>
@@ -571,6 +615,82 @@ function Home() {
                 </div>
               </div>
             )}
+
+            {/* Share Story Modal */}
+            {showShareModal && (
+              <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-3xl max-w-xl w-full shadow-2xl border border-red-100 animate-scale-in">
+                  <div className="p-8">
+                    <div className="flex justify-between items-center mb-6">
+                      <h3 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+                        <FaPen className="text-red-600" /> Share Your Story
+                      </h3>
+                      <button onClick={() => setShowShareModal(false)} className="text-3xl text-gray-400 hover:text-red-600 transition">
+                        <FaTimes />
+                      </button>
+                    </div>
+
+                    {storySuccess ? (
+                      <div className="text-center py-8">
+                        <div className="text-5xl mb-4">🎉</div>
+                        <p className="text-green-600 font-semibold text-lg">{storySuccess}</p>
+                      </div>
+                    ) : (
+                      <form onSubmit={handleShareStory} className="space-y-5">
+                        {storyError && (
+                          <div className="bg-red-50 border-l-4 border-red-500 text-red-700 p-3 rounded-r-xl text-sm">
+                            {storyError}
+                          </div>
+                        )}
+
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Story Title *</label>
+                          <input
+                            type="text"
+                            placeholder="e.g. How I saved a life by donating blood"
+                            value={storyForm.title}
+                            onChange={e => setStoryForm(p => ({ ...p, title: e.target.value }))}
+                            className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-4 focus:ring-red-100 outline-none transition text-gray-900"
+                            maxLength={100}
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">Your Story *</label>
+                          <textarea
+                            rows={5}
+                            placeholder="Share your experience as a donor, receiver, or hospital..."
+                            value={storyForm.message}
+                            onChange={e => setStoryForm(p => ({ ...p, message: e.target.value }))}
+                            className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-4 focus:ring-red-100 outline-none transition text-gray-900 resize-none"
+                            maxLength={1000}
+                          />
+                          <p className="text-xs text-gray-400 text-right mt-1">{storyForm.message.length}/1000</p>
+                        </div>
+
+                        <div className="flex gap-3 pt-2">
+                          <button
+                            type="button"
+                            onClick={() => setShowShareModal(false)}
+                            className="flex-1 py-3 rounded-xl border border-gray-200 text-gray-600 font-semibold hover:bg-gray-50 transition"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={submitting}
+                            className="flex-1 py-3 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold transition disabled:opacity-70 disabled:cursor-not-allowed"
+                          >
+                            {submitting ? 'Sharing...' : 'Share Story'}
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
           </div>
         </section>
 

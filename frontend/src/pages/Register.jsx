@@ -2,7 +2,6 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { GoogleLogin } from '@react-oauth/google';
 import { FaHeartbeat, FaEnvelope, FaLock, FaPhone, FaMapMarkerAlt, FaUser, FaEye, FaEyeSlash } from 'react-icons/fa';
 
 const Register = () => {
@@ -21,7 +20,7 @@ const Register = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
-  const { signup, googleLogin } = useAuth();
+  const { signup } = useAuth();
   const navigate = useNavigate();
 
   const bloodGroups = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
@@ -93,23 +92,6 @@ const Register = () => {
     }
   };
 
-  const handleGoogleSuccess = async (credentialResponse) => {
-    setError('');
-    try {
-      const role = isOrganization ? 'hospital' : 'receiver';
-      const { userData, isNewUser } = await googleLogin(credentialResponse.credential, role);
-      if (isOrganization) {
-        navigate('/hospital/dashboard', { replace: true });
-      } else if (isNewUser) {
-        navigate('/dashboard', { state: { completeProfile: true } });
-      } else {
-        redirectByRole((userData?.role || '').toLowerCase());
-      }
-    } catch (err) {
-      setError(err.response?.data?.message || err.message || 'Google sign-in failed.');
-    }
-  };
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-red-50 via-rose-50 to-white flex items-center justify-center px-4 py-8">
       <div className="w-full max-w-4xl bg-white/90 backdrop-blur-md rounded-3xl shadow-2xl border border-red-100/50 p-6 lg:p-10 animate-fade-in">
@@ -155,31 +137,6 @@ const Register = () => {
           >
             Organization
           </button>
-        </div>
-
-        {/* Google Button – available for both Donor/Receiver and Organization */}
-        <div className="flex justify-center mb-4">
-          <GoogleLogin
-            onSuccess={handleGoogleSuccess}
-            onError={() => setError('Google sign-in failed. Please try again.')}
-            width="380"
-            text="signup_with"
-            shape="rectangular"
-            theme="outline"
-            size="large"
-          />
-        </div>
-        <p className="text-center text-xs text-gray-400 mb-4">
-          {isOrganization
-            ? 'Google sign-up registers your organization — complete your profile after.'
-            : 'Google sign-up creates a Receiver account — update your role & blood group in Profile.'}
-        </p>
-
-        {/* Divider */}
-        <div className="flex items-center gap-4 mb-6">
-          <hr className="flex-1 border-red-100" />
-          <span className="text-gray-400 text-sm font-medium">or register with email</span>
-          <hr className="flex-1 border-red-100" />
         </div>
 
         {/* Form */}

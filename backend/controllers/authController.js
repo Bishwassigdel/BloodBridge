@@ -10,6 +10,37 @@ dotenv.config();
 
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
+// ── Donation cooldown constant ──────────────────────────────────────────
+const DONATION_COOLDOWN_DAYS = 56;
+
+/**
+ * Checks if a donor's 56-day cooldown has expired and auto-resets
+ * isAvailable to true if so. Safe to call on every user fetch.
+ * Returns the (potentially updated) user object.
+ */
+export const autoResetAvailability = async (user) => {
+  if (!user || user.role !== 'donor') return user;
+  if (user.isAvailable) return user; // already available, nothing to do
+
+  if (!user.lastDonation) {
+    // No donation on record but marked unavailable — reset it
+    await User.findByIdAndUpdate(user._id, { isAvailable: true });
+    user.isAvailable = true;
+    return user;
+  }
+
+  const msSinceDonation = Date.now() - new Date(user.lastDonation).getTime();
+  const daysSinceDonation = msSinceDonation / (1000 * 60 * 60 * 24);
+
+  if (daysSinceDonation >= DONATION_COOLDOWN_DAYS) {
+    await User.findByIdAndUpdate(user._id, { isAvailable: true });
+    user.isAvailable = true;
+    console.log(`Auto-reset availability for donor ${user._id} (${Math.floor(daysSinceDonation)} days since last donation)`);
+  }
+
+  return user;
+};
+
 // Generate JWT
 const generateToken = (id) => {
   if (!process.env.JWT_SECRET) {
@@ -46,7 +77,9 @@ export const signupUser = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Blood group is required for donors/receivers' });
     }
 
-    const userExists = await User.findOne({ $or: [{ email }, { phone: phone || null }] });
+    const orConditions = [{ email }];
+    if (phone && phone.trim()) orConditions.push({ phone: phone.trim() });
+    const userExists = await User.findOne({ $or: orConditions });
     if (userExists) {
       return res.status(400).json({ success: false, message: 'Email or phone already exists' });
     }
@@ -293,15 +326,25 @@ export const loginUser = async (req, res) => {
 // Get Current User (unchanged)
 export const getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select(
-      '-password -resetPasswordToken -resetPasswordExpire -__v'
-    );
+    const userWithPassword = await User.findById(req.user._id).select('+password');
 
-    if (!user) {
+    if (!userWithPassword) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    res.status(200).json({ success: true, user });
+    let user = await User.findById(req.user._id).select(
+      '-password -resetPasswordToken -resetPasswordExpire -__v'
+    );
+
+    // Auto-reset availability after 56-day cooldown
+    user = await autoResetAvailability(user);
+
+    // Tell the frontend whether this account has a password set
+    // (Google-only accounts have no password; regular accounts do)
+    res.status(200).json({
+      success: true,
+      user: { ...user.toObject(), hasPassword: !!userWithPassword.password },
+    });
   } catch (err) {
     console.error('Get me error:', err);
     res.status(500).json({ success: false, message: 'Server error' });

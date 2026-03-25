@@ -10,6 +10,7 @@ import { fileURLToPath } from 'url';
 import authRoutes from './routes/auth.js';
 import bloodRoutes from './routes/blood.js';
 import notificationRoutes from './routes/notification.js';
+import storyRoutes from './routes/story.js';
 
 // ESM __dirname equivalent
 const __filename = fileURLToPath(import.meta.url);
@@ -62,6 +63,7 @@ connectDB();
 app.use('/api/auth', authRoutes);
 app.use('/api/blood', bloodRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/stories', storyRoutes);
 
 // ── Health Check / Root ─────────────────────────────────────────────────
 app.get('/', (req, res) => {
