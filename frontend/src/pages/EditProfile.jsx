@@ -91,7 +91,7 @@ function EditProfile() {
         });
 
         setAvatarPreview(freshUser.avatar || null);
-        setHasPassword(!!freshUser.hasPassword || !!freshUser.password);
+        setHasPassword(!!freshUser.hasPassword);
       } catch (err) {
         console.error('Failed to load profile:', err);
         setErrorMsg('Could not load your profile data');
@@ -342,7 +342,7 @@ function EditProfile() {
             {/* Role-specific name field */}
             {isHospital ? (
               <div className="md:col-span-2">
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-1.5">
                   <FaHospital className="text-red-600" />
                   Hospital/Organization Name
                 </label>
@@ -389,7 +389,7 @@ function EditProfile() {
 
             {/* Phone */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
+              <label className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-1.5">
                 <FaPhone className="text-red-600" />
                 Phone Number
               </label>
@@ -408,7 +408,7 @@ function EditProfile() {
             {/* Blood Group (Donor/Receiver only) */}
             {isDonorOrReceiver && (
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-1.5">
                   <FaTint className="text-red-600" />
                   Blood Group <span className="text-red-600">*</span>
                 </label>
@@ -431,7 +431,7 @@ function EditProfile() {
             {/* Location / Address */}
             {isHospital ? (
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-1.5">
                   <FaMapMarkerAlt className="text-red-600" />
                   Location/Address
                 </label>
@@ -446,7 +446,7 @@ function EditProfile() {
               </div>
             ) : (
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-1.5">
                   <FaHome className="text-red-600" />
                   Address
                 </label>
@@ -464,7 +464,7 @@ function EditProfile() {
             {/* Website (Hospital only) */}
             {isHospital && (
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-1.5">
                   <FaGlobe className="text-red-600" />
                   Website (Optional)
                 </label>
@@ -484,7 +484,7 @@ function EditProfile() {
             {isDonorOrReceiver && (
               <>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
+                  <label className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-1.5">
                     <FaUserFriends className="text-red-600" />
                     Emergency Contact Name
                   </label>
