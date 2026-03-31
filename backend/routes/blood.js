@@ -8,6 +8,12 @@ import {
   acceptBloodRequest,
   fulfillBloodRequest,
   getMatchingRequests,
+  cancelBloodRequest,
+  editBloodRequest,
+  getDonors,
+  sendDonorAlert,
+  getAllRequests,
+  assignDonorToRequest,
 } from '../controllers/bloodController.js';
 
 import { recordDonation, getDonationHistory } from '../controllers/donationController.js';
@@ -33,12 +39,19 @@ router.get('/my-requests', getMyRequests);
 router.get('/matching-requests', getMatchingRequests);
 router.patch('/:id/accept', acceptBloodRequest);
 router.patch('/:id/fulfill', fulfillBloodRequest);
+router.patch('/:id/cancel', cancelBloodRequest);
+router.patch('/:id/edit', editBloodRequest);
 
 router.post('/donate', recordDonation);
 router.get('/my-donations', getDonationHistory);
 
 // Hospital-only
 router.use(restrictTo('hospital'));
+
+router.get('/donors', getDonors);
+router.post('/donors/alert', sendDonorAlert);
+router.get('/all-requests', getAllRequests);
+router.patch('/:id/assign-donor', assignDonorToRequest);
 
 router.route('/inventory')
   .post(updateInventory)

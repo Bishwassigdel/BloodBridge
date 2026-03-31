@@ -49,19 +49,21 @@ export const createBloodRequest = async (req, res) => {
     // Notify matching available donors
     let notifiedCount = 0;
     try {
-      const matchingDonors = await User.find({
+      // Notify ALL matching blood group donors (available first, then unavailable)
+      const allMatchingDonors = await User.find({
         role: 'donor',
         bloodGroup: bloodGroup,
-        isAvailable: true,
         _id: { $ne: req.user._id },
       })
-        .select('_id')
+        .select('_id isAvailable')
         .lean();
 
-      if (matchingDonors.length > 0) {
-        const notifications = matchingDonors.map((donor) => ({
+      if (allMatchingDonors.length > 0) {
+        const notifications = allMatchingDonors.map((donor) => ({
           user: donor._id,
-          message: `New ${urgency.toUpperCase()} blood request for ${bloodGroup} (${units} units) at ${hospital}. Urgently needed! Check dashboard now.`,
+          message: donor.isAvailable
+            ? `New ${urgency.toUpperCase()} blood request for ${bloodGroup} (${units} units) at ${hospital}. You can donate — check your dashboard!`
+            : `New ${urgency.toUpperCase()} blood request for ${bloodGroup} (${units} units) at ${hospital}. You're in cooldown but can view the request.`,
           type: 'new_blood_request',
           data: {
             requestId: request._id.toString(),
@@ -69,16 +71,18 @@ export const createBloodRequest = async (req, res) => {
             bloodGroup,
             units,
             urgency,
+            location,
+            contactPhone,
             requesterName: req.user?.username || 'A patient',
           },
         }));
 
         await Notification.insertMany(notifications);
-        notifiedCount = matchingDonors.length;
+        notifiedCount = allMatchingDonors.filter(d => d.isAvailable).length;
 
-        console.log(`Successfully notified ${notifiedCount} donors for request ${request._id}`);
+        console.log(`Notified ${allMatchingDonors.length} donors (${notifiedCount} available) for request ${request._id}`);
       } else {
-        console.log(`No available donors found for blood group: ${bloodGroup}`);
+        console.log(`No matching donors found for blood group: ${bloodGroup}`);
       }
     } catch (notifyErr) {
       console.error('Failed to notify donors (non-fatal):', notifyErr.message);
@@ -151,20 +155,35 @@ export const getMatchingRequests = async (req, res) => {
     const updatedUser = await autoResetAvailability(freshUser);
     const donorIsAvailable = updatedUser.isAvailable;
 
-    const requests = await BloodRequest.find({
+    // Pending requests matching this donor's blood group (open for anyone to accept)
+    const pendingRequests = await BloodRequest.find({
       bloodGroup: donorBloodGroup,
       status: 'pending',
       requester: { $ne: req.user._id },
     })
       .sort({ urgency: -1, createdAt: -1 })
       .populate('requester', 'username phone email location')
+      .populate('acceptedBy', 'username phone')
       .lean();
+
+    // Accepted requests where THIS donor was assigned (so they can see & track them)
+    const myAcceptedRequests = await BloodRequest.find({
+      acceptedBy: req.user._id,
+      status: 'accepted',
+    })
+      .sort({ updatedAt: -1 })
+      .populate('requester', 'username phone email location')
+      .populate('acceptedBy', 'username phone')
+      .lean();
+
+    // Merge: accepted ones first (action needed), then pending
+    const requests = [...myAcceptedRequests, ...pendingRequests];
 
     res.status(200).json({
       success: true,
       count: requests.length,
       requests,
-      donorIsAvailable,  // frontend can use this to update the availability toggle
+      donorIsAvailable,
     });
   } catch (err) {
     console.error('Get matching requests error:', err);
@@ -249,7 +268,7 @@ export const acceptBloodRequest = async (req, res) => {
         requestId: request._id,
         donorId: userId,
         donorName: req.user.username,
-        donorPhone: req.user.phone,
+        contactPhone: req.user.phone,
       },
     });
 
@@ -270,6 +289,81 @@ export const acceptBloodRequest = async (req, res) => {
  * Fulfill a blood request (receiver confirms blood was received)
  * PATCH /api/blood/:id/fulfill
  */
+/**
+ * Cancel a blood request (receiver cancels their own pending request)
+ * PATCH /api/blood/:id/cancel
+ */
+export const cancelBloodRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const request = await BloodRequest.findById(id);
+
+    if (!request) {
+      return res.status(404).json({ success: false, message: 'Request not found' });
+    }
+    if (request.requester.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: 'Not authorized to cancel this request' });
+    }
+    if (request.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot cancel a request that is already ${request.status}`,
+      });
+    }
+
+    request.status = 'cancelled';
+    await request.save();
+
+    res.status(200).json({ success: true, message: 'Request cancelled successfully', request });
+  } catch (err) {
+    console.error('Cancel blood request error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+/**
+ * Edit a pending blood request (receiver edits their own pending request)
+ * PATCH /api/blood/:id/edit
+ */
+export const editBloodRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { hospital, units, urgency, location, contactPhone, note, bloodGroup } = req.body;
+
+    const request = await BloodRequest.findById(id);
+
+    if (!request) {
+      return res.status(404).json({ success: false, message: 'Request not found' });
+    }
+    if (request.requester.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: 'Not authorized to edit this request' });
+    }
+    if (request.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only pending requests can be edited',
+      });
+    }
+
+    if (hospital) request.hospital = hospital;
+    if (units) request.units = Number(units);
+    if (urgency) request.urgency = urgency;
+    if (location !== undefined) request.location = location;
+    if (contactPhone) request.contactPhone = contactPhone;
+    if (note !== undefined) request.note = note;
+    if (bloodGroup) request.bloodGroup = bloodGroup;
+
+    await request.save();
+    await request.populate('requester', 'username phone email');
+    await request.populate('acceptedBy', 'username phone email');
+
+    res.status(200).json({ success: true, message: 'Request updated successfully', request });
+  } catch (err) {
+    console.error('Edit blood request error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
 export const fulfillBloodRequest = async (req, res) => {
   try {
     const { id } = req.params;
@@ -322,6 +416,301 @@ export const fulfillBloodRequest = async (req, res) => {
     });
   } catch (err) {
     console.error('Fulfill blood request error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+/**
+ * Get donor network list (hospital-only)
+ * GET /api/blood/donors?bloodGroup=A%2B&available=true&search=kathmandu
+ */
+export const getDonors = async (req, res) => {
+  try {
+    const { bloodGroup, available, search } = req.query;
+
+    const filter = { role: 'donor' };
+    if (bloodGroup) filter.bloodGroup = bloodGroup;
+    if (available === 'true') filter.isAvailable = true;
+    if (available === 'false') filter.isAvailable = false;
+    if (search) {
+      filter.$or = [
+        { username: { $regex: search, $options: 'i' } },
+        { location: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    const donors = await User.find(filter)
+      .select('username bloodGroup phone location isAvailable lastDonation createdAt')
+      .sort({ isAvailable: -1, createdAt: -1 })
+      .lean();
+
+    // Compute days left in cooldown for unavailable donors
+    const now = Date.now();
+    const enriched = donors.map(d => {
+      let daysLeft = 0;
+      let nextEligible = null;
+      if (!d.isAvailable && d.lastDonation) {
+        const elapsed = (now - new Date(d.lastDonation)) / 86400000;
+        daysLeft = Math.max(0, Math.ceil(56 - elapsed));
+        nextEligible = new Date(new Date(d.lastDonation).getTime() + 56 * 86400000);
+      }
+      return { ...d, daysLeft, nextEligible };
+    });
+
+    // Summary stats
+    const total = enriched.length;
+    const availableCount = enriched.filter(d => d.isAvailable).length;
+    const cooldownCount = total - availableCount;
+
+    // Count by blood group
+    const byBloodGroup = {};
+    enriched.forEach(d => {
+      byBloodGroup[d.bloodGroup] = (byBloodGroup[d.bloodGroup] || 0) + 1;
+    });
+
+    res.status(200).json({
+      success: true,
+      donors: enriched,
+      stats: { total, available: availableCount, cooldown: cooldownCount, byBloodGroup },
+    });
+  } catch (err) {
+    console.error('Get donors error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+/**
+ * Send alert notification to donors of a blood group (hospital-only)
+ * POST /api/blood/donors/alert
+ * Body: { bloodGroup, message?, allDonors? }
+ *   allDonors: if true, also notifies donors currently in cooldown
+ */
+export const sendDonorAlert = async (req, res) => {
+  try {
+    const { bloodGroup, message, allDonors = false } = req.body;
+
+    if (!bloodGroup) {
+      return res.status(400).json({ success: false, message: 'Blood group is required' });
+    }
+
+    const hospitalName = req.user.hospitalName || req.user.username;
+    const hospitalPhone = req.user.phone || null;
+    const hospitalLocation = req.user.location || null;
+
+    // Build donor filter — optionally include cooldown donors
+    const donorFilter = { role: 'donor', bloodGroup };
+    if (!allDonors) donorFilter.isAvailable = true;
+
+    const matchingDonors = await User.find(donorFilter)
+      .select('_id isAvailable')
+      .lean();
+
+    const availableCount = matchingDonors.filter(d => d.isAvailable).length;
+    const cooldownCount = matchingDonors.length - availableCount;
+
+    if (matchingDonors.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: `No ${allDonors ? '' : 'available '}${bloodGroup} donors found to notify.`,
+        notified: 0,
+        availableCount: 0,
+        cooldownCount: 0,
+      });
+    }
+
+    const notifications = matchingDonors.map(donor => {
+      const defaultMsg = donor.isAvailable
+        ? `🏥 ${hospitalName} needs ${bloodGroup} blood donors. You're eligible — please visit or contact us!`
+        : `🏥 ${hospitalName} needs ${bloodGroup} blood donors. You're currently in cooldown, but keeping you in the loop.`;
+      return {
+        user: donor._id,
+        message: message?.trim() || defaultMsg,
+        type: 'general',
+        severity: 'high',
+        data: {
+          hospitalName,
+          bloodGroup,
+          type: 'hospital_broadcast',
+          hospitalPhone,
+          hospitalLocation,
+        },
+      };
+    });
+
+    await Notification.insertMany(notifications);
+
+    const summary = allDonors
+      ? `Alert sent to ${matchingDonors.length} ${bloodGroup} donor(s) — ${availableCount} available, ${cooldownCount} in cooldown.`
+      : `Alert sent to ${availableCount} available ${bloodGroup} donor(s).`;
+
+    res.status(200).json({
+      success: true,
+      message: summary,
+      notified: matchingDonors.length,
+      availableCount,
+      cooldownCount,
+    });
+  } catch (err) {
+    console.error('Send donor alert error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+/**
+ * Get all blood requests on the platform (hospital-only)
+ * GET /api/blood/all-requests?bloodGroup=A%2B&urgency=emergency&status=pending&search=kathmandu
+ */
+export const getAllRequests = async (req, res) => {
+  try {
+    const { bloodGroup, urgency, status, search } = req.query;
+
+    const filter = {};
+    if (bloodGroup) filter.bloodGroup = bloodGroup;
+    if (urgency) filter.urgency = urgency;
+    if (status) filter.status = status;
+    if (search) {
+      filter.$or = [
+        { hospital: { $regex: search, $options: 'i' } },
+        { location: { $regex: search, $options: 'i' } },
+      ];
+    }
+
+    const requests = await BloodRequest.find(filter)
+      .sort({ urgency: -1, createdAt: -1 })
+      .populate('requester', 'username phone email')
+      .populate('acceptedBy', 'username phone')
+      .lean();
+
+    // Summary stats
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    const total = requests.length;
+    const emergency = requests.filter(r => r.urgency === 'emergency' && r.status === 'pending').length;
+    const pending = requests.filter(r => r.status === 'pending').length;
+    const accepted = requests.filter(r => r.status === 'accepted').length;
+    const fulfilledToday = requests.filter(r =>
+      (r.status === 'fulfilled' || r.status === 'Fulfilled') &&
+      new Date(r.updatedAt) >= startOfDay
+    ).length;
+
+    res.status(200).json({
+      success: true,
+      requests,
+      stats: { total, emergency, pending, accepted, fulfilledToday },
+    });
+  } catch (err) {
+    console.error('Get all requests error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+/**
+ * Assign a specific donor to a pending request — hospital only
+ * PATCH /api/blood/:id/assign-donor
+ * Body: { donorId }
+ */
+export const assignDonorToRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { donorId } = req.body;
+    const hospitalUserId = req.user._id;
+
+    if (!donorId) {
+      return res.status(400).json({ success: false, message: 'donorId is required' });
+    }
+
+    const request = await BloodRequest.findById(id);
+    if (!request) {
+      return res.status(404).json({ success: false, message: 'Request not found' });
+    }
+
+    // Only the hospital that posted this request can assign a donor
+    if (request.requester.toString() !== hospitalUserId.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only the hospital that posted this request can assign a donor',
+      });
+    }
+
+    if (request.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot assign donor: request is already ${request.status}`,
+      });
+    }
+
+    const donor = await User.findById(donorId);
+    if (!donor) {
+      return res.status(404).json({ success: false, message: 'Donor not found' });
+    }
+    if (donor.role !== 'donor') {
+      return res.status(400).json({ success: false, message: 'Selected user is not a registered donor' });
+    }
+
+    // Blood group must match
+    if (donor.bloodGroup !== request.bloodGroup) {
+      return res.status(400).json({
+        success: false,
+        message: `Donor's blood group (${donor.bloodGroup}) does not match this request (${request.bloodGroup})`,
+      });
+    }
+
+    // 56-day eligibility check
+    if (donor.lastDonation) {
+      const daysSince = (Date.now() - new Date(donor.lastDonation)) / (1000 * 60 * 60 * 24);
+      if (daysSince < 56) {
+        const daysLeft = Math.ceil(56 - daysSince);
+        const nextEligible = new Date(new Date(donor.lastDonation).getTime() + 56 * 24 * 60 * 60 * 1000);
+        return res.status(403).json({
+          success: false,
+          message: `This donor is not eligible yet — they need ${daysLeft} more day${daysLeft !== 1 ? 's' : ''} to recover (eligible after ${nextEligible.toDateString()}).`,
+        });
+      }
+    }
+
+    // Assign the donor
+    request.status = 'accepted';
+    request.acceptedBy = donorId;
+    await request.save();
+
+    // Record the donation and start the 56-day cooldown
+    await Donation.create({
+      donor: donorId,
+      hospital: request.hospital,
+      bloodGroup: request.bloodGroup,
+      units: request.units,
+      notes: `Assigned by hospital for blood request at ${request.hospital}`,
+      donatedAt: new Date(),
+    });
+
+    await User.findByIdAndUpdate(donorId, {
+      lastDonation: new Date(),
+      isAvailable: false,
+    });
+
+    // Notify the donor
+    await Notification.create({
+      user: donorId,
+      message: `🏥 ${req.user.hospitalName || req.user.username} has confirmed your donation for their blood request (${request.bloodGroup}, ${request.units} unit${request.units > 1 ? 's' : ''}). Thank you for saving a life! ❤️`,
+      type: 'request_accepted',
+      data: {
+        requestId: request._id,
+        hospital: request.hospital,
+        bloodGroup: request.bloodGroup,
+      },
+    });
+
+    await request.populate('requester', 'username phone email');
+    await request.populate('acceptedBy', 'username phone email');
+
+    res.status(200).json({
+      success: true,
+      message: `${donor.username} has been assigned as the donor. Donation recorded and 56-day cooldown started.`,
+      request,
+    });
+  } catch (err) {
+    console.error('Assign donor error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 };

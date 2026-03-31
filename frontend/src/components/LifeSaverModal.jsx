@@ -1,5 +1,5 @@
 // src/components/LifeSaverModal.jsx
-import { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react'; // useState kept for show animation
 import { FaHeart, FaTimes, FaPhone, FaHospital, FaTint, FaHandHoldingHeart, FaWhatsapp } from 'react-icons/fa';
 
 /**
@@ -12,24 +12,14 @@ import { FaHeart, FaTimes, FaPhone, FaHospital, FaTint, FaHandHoldingHeart, FaWh
  */
 export default function LifeSaverModal({ open, request, onClose }) {
   const [show, setShow] = useState(false);
-  const [countdown, setCountdown] = useState(8);
 
   useEffect(() => {
     if (open) {
-      setCountdown(8);
       setTimeout(() => setShow(true), 10);
     } else {
       setShow(false);
     }
   }, [open]);
-
-  // Countdown auto-close
-  useEffect(() => {
-    if (!open) return;
-    if (countdown <= 0) { onClose(); return; }
-    const t = setTimeout(() => setCountdown(c => c - 1), 1000);
-    return () => clearTimeout(t);
-  }, [open, countdown, onClose]);
 
   if (!open) return null;
 
@@ -148,9 +138,6 @@ export default function LifeSaverModal({ open, request, onClose }) {
           >
             Got it! I'll reach out now 🙏
           </button>
-          <p className="text-center text-xs text-gray-400 mt-2">
-            Auto-closing in {countdown}s
-          </p>
         </div>
       </div>
     </div>

@@ -41,9 +41,22 @@ export const AuthProvider = ({ children }) => {
     const responseInterceptor = axios.interceptors.response.use(
       (response) => response,
       (error) => {
-        if (error.response?.status === 401) {
-          console.warn(`[401 Unauthorized] → ${error.config?.url} | Logging out`);
+        const url = error.config?.url || '';
+        // Skip auto-logout for the /me endpoint — initializeAuth handles that itself.
+        // Also skip login/signup/verify routes to avoid redirect loops.
+        const isAuthRoute = url.includes('/api/auth/me') ||
+          url.includes('/api/auth/login') ||
+          url.includes('/api/auth/signup') ||
+          url.includes('/api/auth/google') ||
+          url.includes('/api/auth/verify-email');
+
+        if (error.response?.status === 401 && !isAuthRoute) {
+          console.warn(`[401 Unauthorized] → ${url} | Session expired, redirecting to login`);
           logout();
+          // Hard redirect so no more queued requests fire without a token
+          if (!window.location.pathname.includes('/login')) {
+            window.location.href = '/login';
+          }
         }
         return Promise.reject(error);
       }

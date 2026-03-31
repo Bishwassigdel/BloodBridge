@@ -16,10 +16,11 @@ const notificationSchema = new mongoose.Schema({
       'request_accepted',
       'request_fulfilled',
       'request_cancelled',
+      'new_blood_request',
       'general',
-      'low_stock',           // ← added
-      'near_expiry',         // ← added
-      'critical_inventory'   // ← optional – good for future use
+      'low_stock',
+      'near_expiry',
+      'critical_inventory',
     ],
     default: 'general',
   },
