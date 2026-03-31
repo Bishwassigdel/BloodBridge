@@ -29,6 +29,11 @@ export default defineConfig({
     hmr: {
       clientPort: 5173,
     },
+
+    // Suppress COOP warning from Vite HMR postMessage
+    headers: {
+      'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
+    },
   },
 
   // Optional: build configuration (useful when you run `vite build`)

@@ -19,6 +19,17 @@ import {
   FaExchangeAlt,
   FaUser,
   FaCog,
+  FaPhone,
+  FaMapMarkerAlt,
+  FaSearch,
+  FaFilter,
+  FaBullhorn,
+  FaCheckCircle,
+  FaLock,
+  FaHeart,
+  FaEdit,
+  FaBan,
+  FaHandHoldingHeart,
 } from 'react-icons/fa';
 import { useAuth } from '../context/AuthContext';
 
@@ -26,7 +37,7 @@ function HospitalDashboard() {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
 
-  const [activePanel, setActivePanel] = useState('inventory');
+  const [activePanel, setActivePanel] = useState('donors');
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const [inventory, setInventory] = useState([]);
@@ -47,6 +58,43 @@ function HospitalDashboard() {
   const [transferGroup, setTransferGroup] = useState('');
   const [transferUnits, setTransferUnits] = useState('');
   const [receiverHospital, setReceiverHospital] = useState('');
+
+  // Blood Requests state
+  const [allRequests, setAllRequests] = useState([]);
+  const [requestStats, setRequestStats] = useState({ total: 0, emergency: 0, pending: 0, accepted: 0, fulfilledToday: 0 });
+  const [requestsLoading, setRequestsLoading] = useState(false);
+  const [requestFilter, setRequestFilter] = useState({ bloodGroup: '', urgency: '', status: '', search: '' });
+  const [requestTab, setRequestTab] = useState('all');
+  const [postForm, setPostForm] = useState({ bloodGroup: '', units: 1, urgency: 'normal', location: '', contactPhone: '', note: '' });
+  const [postLoading, setPostLoading] = useState(false);
+  const [postResult, setPostResult] = useState({ msg: '', type: '' });
+
+  // Edit / Cancel / Fulfill request state
+  const [editModal, setEditModal] = useState(null);
+  const [editForm, setEditForm] = useState({ bloodGroup: '', units: 1, urgency: 'normal', location: '', contactPhone: '', note: '' });
+  const [editLoading, setEditLoading] = useState(false);
+  const [editResult, setEditResult] = useState({ msg: '', type: '' });
+  const [actionLoading, setActionLoading] = useState('');
+
+  // Assign Donor modal state
+  const [assignModal, setAssignModal] = useState(null);
+  const [assignSearch, setAssignSearch] = useState('');
+  const [assignLoading, setAssignLoading] = useState(false);
+  const [assignResult, setAssignResult] = useState({ msg: '', type: '' });
+  const [assignDonors, setAssignDonors] = useState([]);
+  const [assignDonorsLoading, setAssignDonorsLoading] = useState(false);
+
+  // Donor Network state
+  const [donors, setDonors] = useState([]);
+  const [donorStats, setDonorStats] = useState({ total: 0, available: 0, cooldown: 0, byBloodGroup: {} });
+  const [donorsLoading, setDonorsLoading] = useState(false);
+  const [donorFilter, setDonorFilter] = useState({ bloodGroup: '', available: '', search: '' });
+  const [alertGroup, setAlertGroup] = useState('');
+  const [alertMessage, setAlertMessage] = useState('');
+  const [alertLoading, setAlertLoading] = useState(false);
+  const [alertResult, setAlertResult] = useState({ msg: '', type: '' }); // type: 'success' | 'error'
+  const [alertIncludeCooldown, setAlertIncludeCooldown] = useState(false);
+  const [showAlertForm, setShowAlertForm] = useState(false);
 
   const token = localStorage.getItem('token');
 
@@ -132,6 +180,51 @@ function HospitalDashboard() {
     }
   };
 
+  const fetchDonors = async (filters = {}) => {
+    if (!isAuthenticated) return;
+    setDonorsLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (filters.bloodGroup) params.append('bloodGroup', filters.bloodGroup);
+      if (filters.available !== '') params.append('available', filters.available);
+      if (filters.search) params.append('search', filters.search);
+      const url = `/api/blood/donors${params.toString() ? '?' + params.toString() : ''}`;
+      const data = await fetchWithAuth(url);
+      if (data?.success) {
+        setDonors(data.donors || []);
+        setDonorStats(data.stats || { total: 0, available: 0, cooldown: 0, byBloodGroup: {} });
+      }
+    } catch (err) {
+      console.error('Donors fetch failed', err);
+    } finally {
+      setDonorsLoading(false);
+    }
+  };
+
+  const handleSendAlert = async () => {
+    if (!alertGroup) return;
+    setAlertLoading(true);
+    setAlertResult({ msg: '', type: '' });
+    try {
+      const res = await axios.post('/api/blood/donors/alert', {
+        bloodGroup: alertGroup,
+        message: alertMessage.trim() || undefined,
+        allDonors: alertIncludeCooldown,
+      }, { headers: { 'x-auth-token': token } });
+      setAlertResult({ msg: res.data.message, type: 'success' });
+      setAlertMessage('');
+      setAlertGroup('');
+      setAlertIncludeCooldown(false);
+      setShowAlertForm(false);
+      // Auto-dismiss success banner after 5 seconds
+      setTimeout(() => setAlertResult({ msg: '', type: '' }), 5000);
+    } catch (err) {
+      setAlertResult({ msg: err.response?.data?.message || 'Failed to send alert.', type: 'error' });
+    } finally {
+      setAlertLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!isAuthenticated) {
       navigate('/login');
@@ -153,7 +246,13 @@ function HospitalDashboard() {
       fetchNotifications();
     }
     if (activePanel === 'inventory') {
-      fetchLogs(); // Ensure Today's Usage loads fresh
+      fetchLogs();
+    }
+    if (activePanel === 'donors') {
+      fetchDonors(donorFilter);
+    }
+    if (activePanel === 'requests') {
+      fetchAllRequests(requestFilter);
     }
   }, [activePanel, token]);
 
@@ -225,6 +324,155 @@ function HospitalDashboard() {
     }
   };
 
+  const fetchAllRequests = async (filters = {}) => {
+    if (!isAuthenticated) return;
+    setRequestsLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (filters.bloodGroup) params.append('bloodGroup', filters.bloodGroup);
+      if (filters.urgency) params.append('urgency', filters.urgency);
+      if (filters.status) params.append('status', filters.status);
+      if (filters.search) params.append('search', filters.search);
+      const url = `/api/blood/all-requests${params.toString() ? '?' + params.toString() : ''}`;
+      const data = await fetchWithAuth(url);
+      if (data?.success) {
+        setAllRequests(data.requests || []);
+        setRequestStats(data.stats || { total: 0, emergency: 0, pending: 0, fulfilledToday: 0 });
+      }
+    } catch (err) {
+      console.error('All requests fetch failed', err);
+    } finally {
+      setRequestsLoading(false);
+    }
+  };
+
+  const handlePostRequest = async (e) => {
+    e.preventDefault();
+    setPostLoading(true);
+    setPostResult({ msg: '', type: '' });
+    try {
+      const hospitalName = user?.hospitalName || user?.username || 'Hospital';
+      const res = await axios.post('/api/blood/request', {
+        ...postForm,
+        hospital: hospitalName,
+        location: postForm.location || hospitalName,
+      }, { headers: { 'x-auth-token': token } });
+      if (res.data.success) {
+        setPostResult({ msg: `Request posted! ${res.data.message}`, type: 'success' });
+        setPostForm({ bloodGroup: '', units: 1, urgency: 'normal', location: '', contactPhone: '', note: '' });
+        fetchAllRequests(requestFilter);
+      }
+    } catch (err) {
+      setPostResult({ msg: err.response?.data?.message || 'Failed to post request.', type: 'error' });
+    } finally {
+      setPostLoading(false);
+    }
+  };
+
+  const handleCancelRequest = async (id) => {
+    if (!window.confirm('Cancel this blood request?')) return;
+    setActionLoading(id);
+    try {
+      await axios.patch(`/api/blood/${id}/cancel`, {}, { headers: { 'x-auth-token': token } });
+      fetchAllRequests(requestFilter);
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to cancel request.');
+    } finally {
+      setActionLoading('');
+    }
+  };
+
+  const handleFulfillRequest = async (id) => {
+    if (!window.confirm('Mark this request as fulfilled? This confirms the donor has delivered blood.')) return;
+    setActionLoading(id);
+    try {
+      await axios.patch(`/api/blood/${id}/fulfill`, {}, { headers: { 'x-auth-token': token } });
+      fetchAllRequests(requestFilter);
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to mark as fulfilled.');
+    } finally {
+      setActionLoading('');
+    }
+  };
+
+  const openEditModal = (req) => {
+    setEditModal(req);
+    setEditForm({
+      bloodGroup: req.bloodGroup || '',
+      units: req.units || 1,
+      urgency: req.urgency || 'normal',
+      location: req.location || '',
+      contactPhone: req.contactPhone || '',
+      note: req.note || '',
+    });
+    setEditResult({ msg: '', type: '' });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editModal) return;
+    setEditLoading(true);
+    setEditResult({ msg: '', type: '' });
+    try {
+      await axios.patch(`/api/blood/${editModal._id}/edit`, editForm, { headers: { 'x-auth-token': token } });
+      setEditResult({ msg: 'Request updated successfully!', type: 'success' });
+      fetchAllRequests(requestFilter);
+      setTimeout(() => setEditModal(null), 1200);
+    } catch (err) {
+      setEditResult({ msg: err.response?.data?.message || 'Failed to update request.', type: 'error' });
+    } finally {
+      setEditLoading(false);
+    }
+  };
+
+  // Open assign modal: fetch donors filtered to the request's blood group
+  const openAssignModal = async (req) => {
+    setAssignModal(req);
+    setAssignSearch('');
+    setAssignResult({ msg: '', type: '' });
+    setAssignDonorsLoading(true);
+    try {
+      const params = new URLSearchParams({ bloodGroup: req.bloodGroup, available: 'true' });
+      const data = await fetchWithAuth(`/api/blood/donors?${params}`);
+      setAssignDonors(data?.donors || []);
+    } catch {
+      setAssignDonors([]);
+    } finally {
+      setAssignDonorsLoading(false);
+    }
+  };
+
+  const handleAssignDonor = async (donorId) => {
+    if (!assignModal) return;
+    setAssignLoading(true);
+    setAssignResult({ msg: '', type: '' });
+    try {
+      const res = await axios.patch(
+        `/api/blood/${assignModal._id}/assign-donor`,
+        { donorId },
+        { headers: { 'x-auth-token': token } }
+      );
+      setAssignResult({ msg: res.data.message, type: 'success' });
+      fetchAllRequests(requestFilter);
+      setTimeout(() => setAssignModal(null), 1800);
+    } catch (err) {
+      setAssignResult({
+        msg: err.response?.data?.message || 'Failed to assign donor.',
+        type: 'error',
+      });
+    } finally {
+      setAssignLoading(false);
+    }
+  };
+
+  const timeAgo = (dateStr) => {
+    const diff = (Date.now() - new Date(dateStr)) / 1000;
+    if (diff < 60) return 'just now';
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    if (diff < 604800) return `${Math.floor(diff / 86400)}d ago`;
+    return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
   const getStatusStyle = (units) => {
     if (units >= 10) return { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-800', badge: 'bg-green-100' };
     if (units >= 1) return { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-800', badge: 'bg-yellow-100 animate-pulse' };
@@ -284,11 +532,11 @@ function HospitalDashboard() {
 
         <nav className="p-6 space-y-2">
           {[
-            { key: 'inventory', icon: FaTint, label: 'Blood Inventory' },
-            { key: 'donors', icon: FaUsers, label: 'Donor Network' },
-            { key: 'requests', icon: FaClipboardList, label: 'Blood Requests' },
-            { key: 'history', icon: FaHistory, label: 'Activity Log' },
-            { key: 'notifications', icon: FaBell, label: 'Notifications' },
+            { key: 'donors',        icon: FaUsers,       label: 'Donor Network'  },
+            { key: 'requests',      icon: FaClipboardList, label: 'Blood Request' },
+            { key: 'inventory',     icon: FaTint,        label: 'Blood Inventory' },
+            { key: 'history',       icon: FaHistory,     label: 'Activity Log'   },
+            { key: 'notifications', icon: FaBell,        label: 'Notification'   },
           ].map((item) => (
             <button
               key={item.key}
@@ -711,29 +959,1040 @@ function HospitalDashboard() {
             )}
 
             {activePanel === 'donors' && (
-              <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-12 text-center">
-                <FaUsers className="text-9xl text-red-100 mx-auto mb-8" />
-                <h3 className="text-4xl font-bold text-gray-900 mb-6">Donor Network</h3>
-                <p className="text-2xl text-gray-700 max-w-3xl mx-auto">
-                  View and manage registered donors, filter by blood group, availability, and location.
-                </p>
-                <p className="text-xl text-gray-500 mt-8 italic">(Feature coming soon)</p>
+              <div className="space-y-6">
+
+                {/* Header */}
+                <div className="flex items-center justify-between flex-wrap gap-4">
+                  <div>
+                    <h3 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
+                      <span className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center">
+                        <FaUsers className="text-red-600 text-lg" />
+                      </span>
+                      Donor Network
+                    </h3>
+                    <p className="text-sm text-gray-500 mt-1 ml-[52px]">All registered donors on the platform</p>
+                  </div>
+                  <button
+                    onClick={() => { setShowAlertForm(v => !v); setAlertResult(''); }}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-bold rounded-xl transition-all shadow-sm"
+                  >
+                    <FaBullhorn className="text-sm" />
+                    Send Alert
+                  </button>
+                </div>
+
+                {/* Alert result banner */}
+                {alertResult.msg && (
+                  <div className={`flex items-center gap-3 px-5 py-3 rounded-xl text-sm font-medium border ${
+                    alertResult.type === 'success'
+                      ? 'bg-green-50 border-green-200 text-green-700'
+                      : 'bg-red-50 border-red-200 text-red-700'
+                  }`}>
+                    {alertResult.type === 'success'
+                      ? <FaCheckCircle className="text-green-500 flex-shrink-0" />
+                      : <FaExclamationCircle className="text-red-500 flex-shrink-0" />}
+                    {alertResult.msg}
+                  </div>
+                )}
+
+                {/* Send Alert form */}
+                {showAlertForm && (() => {
+                  // Live preview: count how many donors will be reached
+                  const previewDonors = alertGroup
+                    ? donors.filter(d => d.bloodGroup === alertGroup && (alertIncludeCooldown || d.isAvailable))
+                    : [];
+                  const previewAvailable = previewDonors.filter(d => d.isAvailable).length;
+                  const previewCooldown = previewDonors.length - previewAvailable;
+
+                  return (
+                    <div className="bg-red-50 border border-red-200 rounded-2xl p-5 space-y-4">
+                      {/* Header */}
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-bold text-red-700 flex items-center gap-2">
+                          <FaBullhorn className="text-sm" /> Broadcast Alert to Donors
+                        </p>
+                        {alertGroup && (
+                          <span className="text-xs font-semibold px-3 py-1 rounded-full bg-red-100 text-red-700 border border-red-200">
+                            {previewDonors.length === 0
+                              ? 'No matching donors'
+                              : `Will reach ${previewDonors.length} donor${previewDonors.length !== 1 ? 's' : ''}`}
+                            {previewDonors.length > 0 && (
+                              <span className="ml-1 text-red-500 font-normal">
+                                ({previewAvailable} available{previewCooldown > 0 ? `, ${previewCooldown} cooldown` : ''})
+                              </span>
+                            )}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {/* Blood group picker */}
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1.5">
+                            Blood Group <span className="text-red-500">*</span>
+                          </label>
+                          <div className="grid grid-cols-4 gap-1.5">
+                            {['A+','A-','B+','B-','O+','O-','AB+','AB-'].map(bg => {
+                              const bgCount = donors.filter(d => d.bloodGroup === bg && (alertIncludeCooldown || d.isAvailable)).length;
+                              return (
+                                <button
+                                  key={bg}
+                                  type="button"
+                                  onClick={() => setAlertGroup(bg)}
+                                  className={`py-2 rounded-xl text-xs font-bold border-2 transition-all relative ${
+                                    alertGroup === bg
+                                      ? 'bg-red-600 border-red-600 text-white'
+                                      : 'bg-white border-gray-200 text-gray-700 hover:border-red-300'
+                                  }`}
+                                >
+                                  {bg}
+                                  {bgCount > 0 && (
+                                    <span className={`absolute -top-1.5 -right-1.5 text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center ${
+                                      alertGroup === bg ? 'bg-white text-red-600' : 'bg-red-500 text-white'
+                                    }`}>{bgCount}</span>
+                                  )}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {/* Include cooldown toggle */}
+                          <label className="flex items-center gap-2 mt-3 cursor-pointer select-none">
+                            <input
+                              type="checkbox"
+                              checked={alertIncludeCooldown}
+                              onChange={e => setAlertIncludeCooldown(e.target.checked)}
+                              className="w-4 h-4 accent-red-600"
+                            />
+                            <span className="text-xs text-gray-600 font-medium">Also notify donors in cooldown</span>
+                          </label>
+                        </div>
+
+                        {/* Custom message */}
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1.5">
+                            Custom Message <span className="text-gray-400 font-normal">(optional)</span>
+                          </label>
+                          <textarea
+                            value={alertMessage}
+                            onChange={e => setAlertMessage(e.target.value)}
+                            rows="4"
+                            placeholder={alertGroup
+                              ? `Default: "🏥 ${user?.hospitalName || user?.username} needs ${alertGroup} blood donors. You're eligible — please visit or contact us!"`
+                              : 'Select a blood group first...'}
+                            className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-red-400 outline-none text-sm resize-none"
+                          />
+                          <p className="text-xs text-gray-400 mt-1">Leave blank to use the personalised default message.</p>
+                        </div>
+                      </div>
+
+                      {/* Action buttons */}
+                      <div className="flex gap-3">
+                        <button
+                          onClick={() => { setShowAlertForm(false); setAlertGroup(''); setAlertMessage(''); setAlertIncludeCooldown(false); }}
+                          className="flex-1 py-2.5 rounded-xl text-sm font-semibold border-2 border-gray-200 text-gray-600 hover:bg-gray-50 transition-all"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleSendAlert}
+                          disabled={!alertGroup || alertLoading || previewDonors.length === 0}
+                          className={`flex-[2] py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                            !alertGroup || alertLoading || previewDonors.length === 0
+                              ? 'bg-red-300 cursor-not-allowed text-white'
+                              : 'bg-red-600 hover:bg-red-700 text-white shadow-sm'
+                          }`}
+                        >
+                          {alertLoading
+                            ? <><FaSpinner className="animate-spin text-xs" /> Sending...</>
+                            : previewDonors.length === 0 && alertGroup
+                            ? 'No donors to notify'
+                            : <><FaBullhorn className="text-xs" /> Send Alert to {previewDonors.length} {alertGroup || '?'} Donor{previewDonors.length !== 1 ? 's' : ''}</>}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Stats cards */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {[
+                    { label: 'Total Donors', value: donorStats.total, color: 'text-gray-800', bg: 'border-gray-100', icon: FaUsers },
+                    { label: 'Available Now', value: donorStats.available, color: 'text-green-600', bg: 'border-green-100', icon: FaHeart },
+                    { label: 'In Cooldown', value: donorStats.cooldown, color: 'text-orange-500', bg: 'border-orange-100', icon: FaLock },
+                    {
+                      label: 'Most Common',
+                      value: Object.entries(donorStats.byBloodGroup).sort((a,b) => b[1]-a[1])[0]?.[0] || '—',
+                      color: 'text-red-600',
+                      bg: 'border-red-100',
+                      icon: FaTint,
+                    },
+                  ].map(stat => (
+                    <div key={stat.label} className={`bg-white p-5 rounded-2xl shadow-sm border ${stat.bg} flex flex-col gap-1`}>
+                      <div className="flex items-center gap-2 mb-1">
+                        <stat.icon className={`text-base ${stat.color} opacity-60`} />
+                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{stat.label}</p>
+                      </div>
+                      <div className={`text-3xl font-extrabold ${stat.color}`}>{donorsLoading ? '...' : stat.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Filters */}
+                <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+                  <div className="flex flex-wrap gap-3 items-end">
+                    <div className="flex-1 min-w-[160px]">
+                      <label className="block text-xs font-semibold text-gray-500 mb-1.5">Search</label>
+                      <div className="relative">
+                        <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs" />
+                        <input
+                          type="text"
+                          value={donorFilter.search}
+                          onChange={e => setDonorFilter(p => ({ ...p, search: e.target.value }))}
+                          placeholder="Name or location..."
+                          className="w-full pl-8 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-500 mb-1.5">Blood Group</label>
+                      <select
+                        value={donorFilter.bloodGroup}
+                        onChange={e => setDonorFilter(p => ({ ...p, bloodGroup: e.target.value }))}
+                        className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none bg-white"
+                      >
+                        <option value="">All Groups</option>
+                        {['A+','A-','B+','B-','O+','O-','AB+','AB-'].map(bg => (
+                          <option key={bg} value={bg}>{bg}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-500 mb-1.5">Availability</label>
+                      <select
+                        value={donorFilter.available}
+                        onChange={e => setDonorFilter(p => ({ ...p, available: e.target.value }))}
+                        className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none bg-white"
+                      >
+                        <option value="">All</option>
+                        <option value="true">Available</option>
+                        <option value="false">In Cooldown</option>
+                      </select>
+                    </div>
+                    <button
+                      onClick={() => fetchDonors(donorFilter)}
+                      className="flex items-center gap-2 px-5 py-2.5 bg-gray-800 hover:bg-gray-900 text-white text-sm font-bold rounded-xl transition-all"
+                    >
+                      <FaFilter className="text-xs" /> Filter
+                    </button>
+                    <button
+                      onClick={() => {
+                        const reset = { bloodGroup: '', available: '', search: '' };
+                        setDonorFilter(reset);
+                        fetchDonors(reset);
+                      }}
+                      className="px-4 py-2.5 text-sm font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-xl transition-all"
+                    >
+                      Reset
+                    </button>
+                  </div>
+                </div>
+
+                {/* Donor list */}
+                {donorsLoading ? (
+                  <div className="flex items-center justify-center py-16">
+                    <FaSpinner className="animate-spin text-3xl text-red-400" />
+                  </div>
+                ) : donors.length === 0 ? (
+                  <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-gray-200">
+                    <FaUsers className="text-4xl text-gray-200 mx-auto mb-4" />
+                    <p className="text-lg font-semibold text-gray-600">No donors found</p>
+                    <p className="text-sm text-gray-400 mt-1">Try adjusting your filters</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {donors.map(donor => {
+                      const available = donor.isAvailable;
+                      return (
+                        <div
+                          key={donor._id}
+                          className={`bg-white rounded-2xl border shadow-sm p-5 hover:shadow-md transition-all ${
+                            available ? 'border-green-100' : 'border-orange-100'
+                          }`}
+                        >
+                          <div className="flex items-start gap-4">
+                            {/* Avatar circle */}
+                            <div className={`flex-shrink-0 w-12 h-12 rounded-full flex items-center justify-center font-extrabold text-lg text-white shadow-sm ${
+                              available ? 'bg-green-500' : 'bg-orange-400'
+                            }`}>
+                              {donor.username?.charAt(0)?.toUpperCase() || '?'}
+                            </div>
+
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between gap-2 flex-wrap">
+                                <span className="font-bold text-gray-900 text-base">{donor.username}</span>
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-extrabold bg-red-600 text-white px-2.5 py-1 rounded-lg">
+                                    {donor.bloodGroup}
+                                  </span>
+                                  <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                                    available
+                                      ? 'bg-green-100 text-green-700'
+                                      : 'bg-orange-100 text-orange-700'
+                                  }`}>
+                                    {available ? '● Available' : '⏸ Cooldown'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2">
+                                {donor.location && (
+                                  <span className="text-xs text-gray-500 flex items-center gap-1">
+                                    <FaMapMarkerAlt className="text-gray-400 text-xs" />
+                                    {donor.location}
+                                  </span>
+                                )}
+                                {donor.phone && (
+                                  <a
+                                    href={`tel:${donor.phone}`}
+                                    className="text-xs font-semibold text-red-600 hover:text-red-800 flex items-center gap-1 transition-colors"
+                                  >
+                                    <FaPhone className="text-xs" />
+                                    {donor.phone}
+                                  </a>
+                                )}
+                              </div>
+
+                              {!available && donor.daysLeft > 0 && (
+                                <p className="text-xs text-orange-600 mt-1.5 flex items-center gap-1">
+                                  <FaLock className="text-xs" />
+                                  Eligible again in <strong className="ml-0.5">{donor.daysLeft} day{donor.daysLeft !== 1 ? 's' : ''}</strong>
+                                  {donor.nextEligible && (
+                                    <span className="text-gray-400 ml-1">
+                                      ({new Date(donor.nextEligible).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })})
+                                    </span>
+                                  )}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
 
             {activePanel === 'requests' && (
-              <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-12 text-center">
-                <FaClipboardList className="text-9xl text-red-100 mx-auto mb-8" />
-                <h3 className="text-4xl font-bold text-gray-900 mb-6">Blood Requests</h3>
-                <p className="text-2xl text-gray-700 max-w-3xl mx-auto">
-                  Manage incoming requests — prioritize urgent cases, match donors, update status.
-                </p>
-                <p className="text-xl text-gray-500 mt-8 italic">(Feature coming soon)</p>
+              <div className="space-y-6">
+
+                {/* Header */}
+                <div className="flex items-center justify-between flex-wrap gap-4">
+                  <div>
+                    <h3 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
+                      <span className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center">
+                        <FaClipboardList className="text-red-600 text-lg" />
+                      </span>
+                      Blood Requests
+                    </h3>
+                    <p className="text-sm text-gray-500 mt-1 ml-[52px]">All blood requests on the platform</p>
+                  </div>
+                </div>
+
+                {/* Stats cards */}
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                  {[
+                    { label: 'Total Requests', value: requestStats.total, color: 'text-gray-800', border: 'border-gray-100', icon: FaClipboardList },
+                    { label: 'Emergency', value: requestStats.emergency, color: 'text-red-600', border: 'border-red-100', icon: FaExclamationTriangle },
+                    { label: 'Pending', value: requestStats.pending, color: 'text-yellow-600', border: 'border-yellow-100', icon: FaSpinner },
+                    { label: 'Donor Assigned', value: requestStats.accepted, color: 'text-blue-600', border: 'border-blue-100', icon: FaHandHoldingHeart },
+                    { label: 'Fulfilled Today', value: requestStats.fulfilledToday, color: 'text-green-600', border: 'border-green-100', icon: FaCheckCircle },
+                  ].map(s => (
+                    <div key={s.label} className={`bg-white p-5 rounded-2xl shadow-sm border ${s.border} flex flex-col gap-1`}>
+                      <div className="flex items-center gap-2 mb-1">
+                        <s.icon className={`text-base ${s.color} opacity-60`} />
+                        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">{s.label}</p>
+                      </div>
+                      <div className={`text-3xl font-extrabold ${s.color}`}>{requestsLoading ? '…' : s.value}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Tabs */}
+                <div className="flex gap-2 bg-gray-100 p-1 rounded-2xl w-fit">
+                  {[
+                    { key: 'all', label: 'All Requests' },
+                    { key: 'mine', label: 'At This Hospital' },
+                    { key: 'post', label: '+ Post Request' },
+                  ].map(tab => (
+                    <button
+                      key={tab.key}
+                      onClick={() => setRequestTab(tab.key)}
+                      className={`px-5 py-2 rounded-xl text-sm font-semibold transition-all ${
+                        requestTab === tab.key
+                          ? 'bg-white text-red-600 shadow-sm'
+                          : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                    >{tab.label}</button>
+                  ))}
+                </div>
+
+                {/* Post Request Form */}
+                {requestTab === 'post' && (
+                  <div className="bg-white rounded-2xl border border-red-100 shadow-sm p-6 max-w-xl space-y-5">
+                    <p className="text-sm font-bold text-gray-800">Post a Blood Request on Behalf of a Patient</p>
+                    <p className="text-xs text-gray-500 -mt-3">Hospital name is pre-filled automatically.</p>
+
+                    {postResult.msg && (
+                      <div className={`flex items-center gap-2 px-4 py-3 rounded-xl text-sm font-medium ${
+                        postResult.type === 'success'
+                          ? 'bg-green-50 border border-green-200 text-green-700'
+                          : 'bg-red-50 border border-red-200 text-red-700'
+                      }`}>
+                        {postResult.type === 'success'
+                          ? <FaCheckCircle className="flex-shrink-0" />
+                          : <FaExclamationCircle className="flex-shrink-0" />}
+                        {postResult.msg}
+                      </div>
+                    )}
+
+                    <form onSubmit={handlePostRequest} className="space-y-4">
+                      {/* Urgency */}
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 mb-2">Urgency</label>
+                        <div className="grid grid-cols-2 gap-2">
+                          {[
+                            { value: 'normal', label: '🩸 Normal', desc: 'Within a few days' },
+                            { value: 'emergency', label: '🚨 Emergency', desc: 'Urgent, within hours' },
+                          ].map(opt => (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              onClick={() => setPostForm(p => ({ ...p, urgency: opt.value }))}
+                              className={`flex flex-col items-start px-4 py-3 rounded-xl border-2 text-left transition-all ${
+                                postForm.urgency === opt.value
+                                  ? 'border-red-500 bg-red-50 text-red-700'
+                                  : 'border-gray-200 text-gray-600 hover:border-red-200'
+                              }`}
+                            >
+                              <span className="text-sm font-bold">{opt.label}</span>
+                              <span className="text-xs opacity-70">{opt.desc}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Blood group */}
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 mb-2">Blood Group <span className="text-red-500">*</span></label>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {['A+','A-','B+','B-','O+','O-','AB+','AB-'].map(bg => (
+                            <button
+                              key={bg}
+                              type="button"
+                              onClick={() => setPostForm(p => ({ ...p, bloodGroup: bg }))}
+                              className={`py-2.5 rounded-xl text-sm font-bold border-2 transition-all ${
+                                postForm.bloodGroup === bg
+                                  ? 'bg-red-600 border-red-600 text-white'
+                                  : 'bg-white border-gray-200 text-gray-700 hover:border-red-300'
+                              }`}
+                            >{bg}</button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Units */}
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 mb-2">Units Needed <span className="text-red-500">*</span></label>
+                        <div className="flex items-center gap-3">
+                          <button type="button" onClick={() => setPostForm(p => ({ ...p, units: Math.max(1, p.units - 1) }))}
+                            className="w-10 h-10 rounded-xl border-2 border-gray-200 text-lg font-bold text-gray-500 hover:border-red-400 hover:text-red-600 transition-all">−</button>
+                          <span className="text-2xl font-extrabold text-red-600 w-8 text-center">{postForm.units}</span>
+                          <button type="button" onClick={() => setPostForm(p => ({ ...p, units: Math.min(10, p.units + 1) }))}
+                            className="w-10 h-10 rounded-xl border-2 border-gray-200 text-lg font-bold text-gray-500 hover:border-red-400 hover:text-red-600 transition-all">+</button>
+                          <span className="text-xs text-gray-400 ml-1">~{postForm.units * 350}ml</span>
+                        </div>
+                      </div>
+
+                      {/* Location + Phone */}
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1.5">Location / Ward</label>
+                          <input
+                            type="text"
+                            value={postForm.location}
+                            onChange={e => setPostForm(p => ({ ...p, location: e.target.value }))}
+                            placeholder="e.g. Ward 3, Kathmandu"
+                            className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1.5">Contact Phone <span className="text-red-500">*</span></label>
+                          <input
+                            type="tel"
+                            required
+                            value={postForm.contactPhone}
+                            onChange={e => setPostForm(p => ({ ...p, contactPhone: e.target.value }))}
+                            placeholder="e.g. 9841234567"
+                            className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Note */}
+                      <div>
+                        <label className="block text-xs font-semibold text-gray-600 mb-1.5">Note <span className="text-gray-400 font-normal">(optional)</span></label>
+                        <textarea
+                          value={postForm.note}
+                          onChange={e => setPostForm(p => ({ ...p, note: e.target.value }))}
+                          rows="2"
+                          placeholder="Patient details, special requirements..."
+                          className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none resize-none"
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={postLoading || !postForm.bloodGroup}
+                        className={`w-full py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all ${
+                          postLoading || !postForm.bloodGroup
+                            ? 'bg-red-300 cursor-not-allowed text-white'
+                            : postForm.urgency === 'emergency'
+                            ? 'bg-red-700 hover:bg-red-800 text-white shadow-sm'
+                            : 'bg-red-600 hover:bg-red-700 text-white shadow-sm'
+                        }`}
+                      >
+                        {postLoading
+                          ? <><FaSpinner className="animate-spin text-xs" /> Posting...</>
+                          : postForm.urgency === 'emergency'
+                          ? '🚨 Post Emergency Request'
+                          : '🩸 Post Blood Request'}
+                      </button>
+                    </form>
+                  </div>
+                )}
+
+                {/* All / At This Hospital list */}
+                {(requestTab === 'all' || requestTab === 'mine') && (
+                  <>
+                    {/* Filter bar */}
+                    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+                      <div className="flex flex-wrap gap-3 items-end">
+                        <div className="flex-1 min-w-[150px]">
+                          <label className="block text-xs font-semibold text-gray-500 mb-1.5">Search</label>
+                          <div className="relative">
+                            <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs" />
+                            <input
+                              type="text"
+                              value={requestFilter.search}
+                              onChange={e => setRequestFilter(p => ({ ...p, search: e.target.value }))}
+                              placeholder="Hospital or location..."
+                              className="w-full pl-8 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-500 mb-1.5">Blood Group</label>
+                          <select
+                            value={requestFilter.bloodGroup}
+                            onChange={e => setRequestFilter(p => ({ ...p, bloodGroup: e.target.value }))}
+                            className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none bg-white"
+                          >
+                            <option value="">All Groups</option>
+                            {['A+','A-','B+','B-','O+','O-','AB+','AB-'].map(bg => (
+                              <option key={bg} value={bg}>{bg}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-500 mb-1.5">Urgency</label>
+                          <select
+                            value={requestFilter.urgency}
+                            onChange={e => setRequestFilter(p => ({ ...p, urgency: e.target.value }))}
+                            className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none bg-white"
+                          >
+                            <option value="">All</option>
+                            <option value="emergency">🚨 Emergency</option>
+                            <option value="normal">Normal</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-xs font-semibold text-gray-500 mb-1.5">Status</label>
+                          <select
+                            value={requestFilter.status}
+                            onChange={e => setRequestFilter(p => ({ ...p, status: e.target.value }))}
+                            className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none bg-white"
+                          >
+                            <option value="">All</option>
+                            <option value="pending">Pending</option>
+                            <option value="accepted">Accepted</option>
+                            <option value="fulfilled">Fulfilled</option>
+                            <option value="cancelled">Cancelled</option>
+                          </select>
+                        </div>
+                        <button
+                          onClick={() => fetchAllRequests(requestFilter)}
+                          className="flex items-center gap-2 px-5 py-2.5 bg-gray-800 hover:bg-gray-900 text-white text-sm font-bold rounded-xl transition-all"
+                        >
+                          <FaFilter className="text-xs" /> Filter
+                        </button>
+                        <button
+                          onClick={() => {
+                            const reset = { bloodGroup: '', urgency: '', status: '', search: '' };
+                            setRequestFilter(reset);
+                            fetchAllRequests(reset);
+                          }}
+                          className="px-4 py-2.5 text-sm font-semibold text-gray-500 hover:text-gray-800 border border-gray-200 rounded-xl transition-all"
+                        >Reset</button>
+                      </div>
+                    </div>
+
+                    {/* Request cards */}
+                    {requestsLoading ? (
+                      <div className="flex items-center justify-center py-16">
+                        <FaSpinner className="animate-spin text-3xl text-red-400" />
+                      </div>
+                    ) : (() => {
+                      const hospitalName = (user?.hospitalName || user?.username || '').toLowerCase();
+                      const displayed = requestTab === 'mine'
+                        ? allRequests.filter(r => r.hospital?.toLowerCase().includes(hospitalName))
+                        : allRequests;
+
+                      return displayed.length === 0 ? (
+                        <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-gray-200">
+                          <FaClipboardList className="text-4xl text-gray-200 mx-auto mb-4" />
+                          <p className="text-lg font-semibold text-gray-600">No requests found</p>
+                          <p className="text-sm text-gray-400 mt-1">Try adjusting your filters</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          <p className="text-sm text-gray-500 font-medium">{displayed.length} request{displayed.length !== 1 ? 's' : ''}</p>
+                          {displayed.map(req => {
+                            const isEmerg = req.urgency === 'emergency';
+                            const isPending = req.status === 'pending';
+                            const isAccepted = req.status === 'accepted';
+                            const isFulfilled = req.status === 'fulfilled' || req.status === 'Fulfilled';
+                            const isCancelled = req.status === 'cancelled';
+
+                            return (
+                              <div
+                                key={req._id}
+                                className={`bg-white rounded-2xl border overflow-hidden shadow-sm hover:shadow-md transition-all ${
+                                  isEmerg && isPending ? 'border-red-300' : 'border-gray-100'
+                                }`}
+                              >
+                                {isEmerg && (
+                                  <div className="bg-red-600 px-4 py-1.5 flex items-center gap-2">
+                                    <span className="text-sm animate-pulse">🚨</span>
+                                    <span className="text-xs font-bold text-white uppercase tracking-wide">Emergency Request</span>
+                                  </div>
+                                )}
+                                <div className="p-4">
+                                  <div className="flex items-start gap-4">
+                                    {/* Blood group badge */}
+                                    <div className={`flex-shrink-0 w-12 h-12 rounded-2xl flex items-center justify-center shadow-sm ${isEmerg ? 'bg-red-600' : 'bg-red-500'}`}>
+                                      <span className="text-white font-extrabold text-sm">{req.bloodGroup}</span>
+                                    </div>
+
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-start justify-between gap-2 flex-wrap">
+                                        <div>
+                                          <p className="font-bold text-gray-900">{req.hospital}</p>
+                                          <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1">
+                                            <span className="text-xs text-gray-500 flex items-center gap-1">
+                                              <FaTint className="text-red-400 text-xs" />{req.units} unit{req.units > 1 ? 's' : ''}
+                                            </span>
+                                            {req.location && (
+                                              <span className="text-xs text-gray-500 flex items-center gap-1">
+                                                <FaMapMarkerAlt className="text-gray-400 text-xs" />{req.location}
+                                              </span>
+                                            )}
+                                            <span className="text-xs text-gray-400">{timeAgo(req.createdAt)}</span>
+                                          </div>
+                                        </div>
+                                        {/* Status pill */}
+                                        <span className={`text-xs font-bold px-3 py-1 rounded-full border flex-shrink-0 ${
+                                          isFulfilled ? 'bg-green-50 text-green-700 border-green-200'
+                                          : isAccepted ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                          : isPending ? 'bg-yellow-50 text-yellow-700 border-yellow-200'
+                                          : isCancelled ? 'bg-gray-50 text-gray-500 border-gray-200'
+                                          : 'bg-gray-50 text-gray-600 border-gray-200'
+                                        }`}>
+                                          {isFulfilled ? '✓ Fulfilled' : isAccepted ? '● Accepted' : isPending ? '○ Pending' : '✕ Cancelled'}
+                                        </span>
+                                      </div>
+
+                                      {/* Contact + donor info */}
+                                      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+                                        {req.requester?.username && (
+                                          <span className="text-xs text-gray-500">
+                                            By: <span className="font-semibold text-gray-700">{req.requester.username}</span>
+                                          </span>
+                                        )}
+                                        {req.contactPhone && (
+                                          <a href={`tel:${req.contactPhone}`} className="text-xs font-semibold text-red-600 hover:text-red-800 flex items-center gap-1">
+                                            <FaPhone className="text-xs" />{req.contactPhone}
+                                          </a>
+                                        )}
+                                        {isAccepted && req.acceptedBy?.username && (
+                                          <span className="text-xs text-blue-600 font-semibold">
+                                            Donor: {req.acceptedBy.username}
+                                            {req.acceptedBy.phone && ` · ${req.acceptedBy.phone}`}
+                                          </span>
+                                        )}
+                                      </div>
+
+                                      {req.note && (
+                                        <p className="text-xs text-gray-400 italic mt-1 truncate max-w-md">{req.note}</p>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {/* Action buttons — for own requests on any tab */}
+                                  {(requestTab === 'mine' || requestTab === 'all') && (
+                                    (() => {
+                                      const userId = user?._id || user?.id;
+                                      const isOwner = userId && req.requester?._id &&
+                                        String(req.requester._id) === String(userId);
+                                      if (!isOwner) return null;
+                                      const busy = actionLoading === req._id;
+                                      return (
+                                        <div className="mt-3 pt-3 border-t border-gray-100 flex gap-2 flex-wrap">
+                                          {isPending && (
+                                            <>
+                                              <button
+                                                onClick={() => openEditModal(req)}
+                                                disabled={busy}
+                                                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-blue-600 border border-blue-200 rounded-xl hover:bg-blue-50 transition-all disabled:opacity-50"
+                                              >
+                                                <FaEdit className="text-xs" /> Edit
+                                              </button>
+                                              <button
+                                                onClick={() => openAssignModal(req)}
+                                                disabled={busy}
+                                                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-purple-700 border border-purple-200 rounded-xl hover:bg-purple-50 transition-all disabled:opacity-50"
+                                              >
+                                                <FaUsers className="text-xs" /> Assign Donor
+                                              </button>
+                                              <button
+                                                onClick={() => handleCancelRequest(req._id)}
+                                                disabled={busy}
+                                                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-gray-500 border border-gray-200 rounded-xl hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all disabled:opacity-50"
+                                              >
+                                                {busy
+                                                  ? <FaSpinner className="animate-spin text-xs" />
+                                                  : <FaBan className="text-xs" />}
+                                                Cancel Request
+                                              </button>
+                                            </>
+                                          )}
+                                          {isAccepted && (
+                                            <button
+                                              onClick={() => handleFulfillRequest(req._id)}
+                                              disabled={busy}
+                                              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-green-700 border border-green-300 rounded-xl hover:bg-green-50 transition-all disabled:opacity-50"
+                                            >
+                                              {busy
+                                                ? <FaSpinner className="animate-spin text-xs" />
+                                                : <FaCheckCircle className="text-xs" />}
+                                              Mark as Fulfilled
+                                            </button>
+                                          )}
+                                        </div>
+                                      );
+                                    })()
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </>
+                )}
               </div>
             )}
           </div>
         )}
       </main>
+
+      {/* ── Assign Donor Modal ── */}
+      {assignModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg relative flex flex-col max-h-[90vh]">
+
+            {/* Header */}
+            <div className="p-6 border-b border-gray-100 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                  <FaUsers className="text-purple-500" /> Assign a Donor
+                </h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  Assigning will confirm the donation and start their 56-day cooldown.
+                </p>
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="text-xs font-bold bg-red-600 text-white px-2.5 py-1 rounded-lg">
+                    {assignModal.bloodGroup}
+                  </span>
+                  <span className="text-xs text-gray-500">· {assignModal.units} unit{assignModal.units > 1 ? 's' : ''} needed</span>
+                  <span className="text-xs text-gray-500">· {assignModal.hospital}</span>
+                </div>
+              </div>
+              <button
+                onClick={() => setAssignModal(null)}
+                className="flex-shrink-0 text-gray-400 hover:text-gray-700 transition-all mt-1"
+              >
+                <FaTimes className="text-xl" />
+              </button>
+            </div>
+
+            {/* Result banner */}
+            {assignResult.msg && (
+              <div className={`mx-6 mt-4 flex items-center gap-2 px-4 py-3 rounded-xl text-sm font-medium ${
+                assignResult.type === 'success'
+                  ? 'bg-green-50 border border-green-200 text-green-700'
+                  : 'bg-red-50 border border-red-200 text-red-700'
+              }`}>
+                {assignResult.type === 'success'
+                  ? <FaCheckCircle className="flex-shrink-0" />
+                  : <FaExclamationCircle className="flex-shrink-0" />}
+                {assignResult.msg}
+              </div>
+            )}
+
+            {/* Search */}
+            <div className="px-6 pt-4 pb-3">
+              <div className="relative">
+                <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-xs" />
+                <input
+                  type="text"
+                  value={assignSearch}
+                  onChange={e => setAssignSearch(e.target.value)}
+                  placeholder="Search by name, phone or location..."
+                  className="w-full pl-8 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-purple-400 outline-none"
+                />
+              </div>
+              <p className="text-xs text-gray-400 mt-2">
+                Showing available <strong>{assignModal.bloodGroup}</strong> donors only
+              </p>
+            </div>
+
+            {/* Donor list */}
+            <div className="overflow-y-auto flex-1 px-6 pb-6 space-y-2">
+              {assignDonorsLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <FaSpinner className="animate-spin text-2xl text-purple-400" />
+                </div>
+              ) : (() => {
+                const q = assignSearch.toLowerCase();
+                const filtered = assignDonors.filter(d =>
+                  !q ||
+                  d.username?.toLowerCase().includes(q) ||
+                  d.phone?.toLowerCase().includes(q) ||
+                  d.location?.toLowerCase().includes(q)
+                );
+
+                if (filtered.length === 0) {
+                  return (
+                    <div className="text-center py-12 bg-gray-50 rounded-2xl border border-dashed border-gray-200">
+                      <FaUsers className="text-3xl text-gray-200 mx-auto mb-3" />
+                      <p className="text-sm font-semibold text-gray-500">No eligible donors found</p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        Try searching by name, or send a broadcast alert from the Donor Network tab
+                      </p>
+                    </div>
+                  );
+                }
+
+                return filtered.map(donor => (
+                  <div
+                    key={donor._id}
+                    className="bg-gray-50 border border-gray-100 rounded-2xl p-4 flex items-center gap-4 hover:border-purple-200 hover:bg-purple-50 transition-all group"
+                  >
+                    {/* Avatar */}
+                    <div className="w-10 h-10 rounded-full bg-green-500 flex items-center justify-center font-extrabold text-white text-sm flex-shrink-0">
+                      {donor.username?.charAt(0)?.toUpperCase() || '?'}
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <p className="font-bold text-gray-900 text-sm">{donor.username}</p>
+                      <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5">
+                        {donor.phone && (
+                          <span className="text-xs text-gray-500 flex items-center gap-1">
+                            <FaPhone className="text-gray-400 text-xs" />{donor.phone}
+                          </span>
+                        )}
+                        {donor.location && (
+                          <span className="text-xs text-gray-500 flex items-center gap-1">
+                            <FaMapMarkerAlt className="text-gray-400 text-xs" />{donor.location}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => handleAssignDonor(donor._id)}
+                      disabled={assignLoading}
+                      className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-purple-600 hover:bg-purple-700 rounded-xl transition-all disabled:opacity-50 shadow-sm"
+                    >
+                      {assignLoading
+                        ? <FaSpinner className="animate-spin text-xs" />
+                        : <FaCheckCircle className="text-xs" />}
+                      Assign
+                    </button>
+                  </div>
+                ));
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Edit Request Modal ── */}
+      {editModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg p-6 space-y-5 relative max-h-[90vh] overflow-y-auto">
+            <button
+              onClick={() => setEditModal(null)}
+              className="absolute top-4 right-4 text-gray-400 hover:text-gray-700 transition-all"
+            >
+              <FaTimes className="text-xl" />
+            </button>
+
+            <div>
+              <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                <FaEdit className="text-red-500" /> Edit Blood Request
+              </h3>
+              <p className="text-xs text-gray-500 mt-1">Only pending requests can be edited.</p>
+            </div>
+
+            {editResult.msg && (
+              <div className={`flex items-center gap-2 px-4 py-3 rounded-xl text-sm font-medium ${
+                editResult.type === 'success'
+                  ? 'bg-green-50 border border-green-200 text-green-700'
+                  : 'bg-red-50 border border-red-200 text-red-700'
+              }`}>
+                {editResult.type === 'success' ? <FaCheckCircle className="flex-shrink-0" /> : <FaExclamationCircle className="flex-shrink-0" />}
+                {editResult.msg}
+              </div>
+            )}
+
+            {/* Urgency */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-2">Urgency</label>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { value: 'normal', label: '🩸 Normal', desc: 'Within a few days' },
+                  { value: 'emergency', label: '🚨 Emergency', desc: 'Urgent, within hours' },
+                ].map(opt => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setEditForm(p => ({ ...p, urgency: opt.value }))}
+                    className={`flex flex-col items-start px-4 py-3 rounded-xl border-2 text-left transition-all ${
+                      editForm.urgency === opt.value
+                        ? 'border-red-500 bg-red-50 text-red-700'
+                        : 'border-gray-200 text-gray-600 hover:border-red-200'
+                    }`}
+                  >
+                    <span className="text-sm font-bold">{opt.label}</span>
+                    <span className="text-xs opacity-70">{opt.desc}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Blood Group */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-2">Blood Group</label>
+              <div className="grid grid-cols-4 gap-1.5">
+                {['A+','A-','B+','B-','O+','O-','AB+','AB-'].map(bg => (
+                  <button
+                    key={bg}
+                    type="button"
+                    onClick={() => setEditForm(p => ({ ...p, bloodGroup: bg }))}
+                    className={`py-2.5 rounded-xl text-sm font-bold border-2 transition-all ${
+                      editForm.bloodGroup === bg
+                        ? 'bg-red-600 border-red-600 text-white'
+                        : 'bg-white border-gray-200 text-gray-700 hover:border-red-300'
+                    }`}
+                  >{bg}</button>
+                ))}
+              </div>
+            </div>
+
+            {/* Units */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-2">Units Needed</label>
+              <div className="flex items-center gap-3">
+                <button type="button" onClick={() => setEditForm(p => ({ ...p, units: Math.max(1, p.units - 1) }))}
+                  className="w-10 h-10 rounded-xl border-2 border-gray-200 text-lg font-bold text-gray-500 hover:border-red-400 hover:text-red-600 transition-all">−</button>
+                <span className="text-2xl font-extrabold text-red-600 w-8 text-center">{editForm.units}</span>
+                <button type="button" onClick={() => setEditForm(p => ({ ...p, units: Math.min(10, p.units + 1) }))}
+                  className="w-10 h-10 rounded-xl border-2 border-gray-200 text-lg font-bold text-gray-500 hover:border-red-400 hover:text-red-600 transition-all">+</button>
+                <span className="text-xs text-gray-400 ml-1">~{editForm.units * 350}ml</span>
+              </div>
+            </div>
+
+            {/* Location + Phone */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1.5">Location / Ward</label>
+                <input
+                  type="text"
+                  value={editForm.location}
+                  onChange={e => setEditForm(p => ({ ...p, location: e.target.value }))}
+                  placeholder="e.g. Ward 3, Kathmandu"
+                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1.5">Contact Phone</label>
+                <input
+                  type="tel"
+                  value={editForm.contactPhone}
+                  onChange={e => setEditForm(p => ({ ...p, contactPhone: e.target.value }))}
+                  placeholder="e.g. 9841234567"
+                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Note */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1.5">Note <span className="text-gray-400 font-normal">(optional)</span></label>
+              <textarea
+                value={editForm.note}
+                onChange={e => setEditForm(p => ({ ...p, note: e.target.value }))}
+                rows="2"
+                placeholder="Patient details, special requirements..."
+                className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none resize-none"
+              />
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => setEditModal(null)}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold border-2 border-gray-200 text-gray-600 hover:bg-gray-50 transition-all"
+              >Discard</button>
+              <button
+                onClick={handleSaveEdit}
+                disabled={editLoading || !editForm.bloodGroup}
+                className={`flex-[2] py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                  editLoading || !editForm.bloodGroup
+                    ? 'bg-red-300 cursor-not-allowed text-white'
+                    : 'bg-red-600 hover:bg-red-700 text-white shadow-sm'
+                }`}
+              >
+                {editLoading
+                  ? <><FaSpinner className="animate-spin text-xs" /> Saving...</>
+                  : <><FaCheckCircle className="text-xs" /> Save Changes</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

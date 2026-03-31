@@ -27,6 +27,11 @@ import {
   FaTint,
   FaExclamationCircle,
   FaHistory,
+  FaHeart,
+  FaEdit,
+  FaBan,
+  FaHandHoldingHeart,
+  FaQuoteLeft,
 } from 'react-icons/fa';
 
 const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
@@ -118,7 +123,20 @@ function Dashboard() {
   const [loadingAccept, setLoadingAccept] = useState(null);
   const [loadingDecline, setLoadingDecline] = useState(null);
   const [loadingFulfill, setLoadingFulfill] = useState(null);
+  const [loadingCancel, setLoadingCancel] = useState(null);
   const [declinedIds, setDeclinedIds] = useState(new Set());
+
+  // Edit request modal state
+  const [editingRequestId, setEditingRequestId] = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const [loadingEdit, setLoadingEdit] = useState(false);
+
+  // Stories state
+  const [stories, setStories] = useState([]);
+  const [storyForm, setStoryForm] = useState({ title: '', message: '' });
+  const [storyLoading, setStoryLoading] = useState(false);
+  const [storyError, setStoryError] = useState('');
+  const [storySuccess, setStorySuccess] = useState('');
 
   const isDonor = user?.role === 'donor';
   const isReceiver = user?.role === 'receiver';
@@ -133,7 +151,10 @@ function Dashboard() {
     setError('');
 
     try {
-      const promises = [axios.get('/api/notifications')];
+      const promises = [
+        axios.get('/api/notifications'),
+        axios.get('/api/stories'),
+      ];
 
       if (isDonor) {
         promises.push(axios.get('/api/blood/matching-requests'));
@@ -150,6 +171,9 @@ function Dashboard() {
 
       if (results[idx++].status === 'fulfilled') {
         setNotifications(results[idx - 1].value.data.notifications || []);
+      }
+      if (results[idx++].status === 'fulfilled') {
+        setStories(results[idx - 1].value.data.stories || []);
       }
 
       if (isDonor) {
@@ -289,6 +313,71 @@ function Dashboard() {
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
     } catch (err) {
       console.error('Mark all read failed:', err);
+    }
+  };
+
+  const handleCancelRequest = async (requestId) => {
+    setLoadingCancel(requestId);
+    try {
+      await axios.patch(`/api/blood/${requestId}/cancel`, {});
+      setMyRequests(prev => prev.map(r => r._id === requestId ? { ...r, status: 'cancelled' } : r));
+      toast.success('Request cancelled', 'Your blood request has been cancelled.');
+    } catch (err) {
+      toast.error('Could not cancel', err.response?.data?.message || 'Please try again.');
+    } finally {
+      setLoadingCancel(null);
+    }
+  };
+
+  const handleStartEdit = (req) => {
+    setEditingRequestId(req._id);
+    setEditForm({
+      hospital: req.hospital || '',
+      bloodGroup: req.bloodGroup || '',
+      units: req.units || 1,
+      urgency: req.urgency || 'normal',
+      location: req.location || '',
+      contactPhone: req.contactPhone || '',
+      note: req.note || '',
+    });
+  };
+
+  const handleEditChange = (e) => {
+    const { name, value } = e.target;
+    setEditForm(prev => ({ ...prev, [name]: value }));
+  };
+
+  const handleSubmitEdit = async (requestId) => {
+    setLoadingEdit(true);
+    try {
+      const res = await axios.patch(`/api/blood/${requestId}/edit`, editForm);
+      setMyRequests(prev => prev.map(r => r._id === requestId ? res.data.request : r));
+      setEditingRequestId(null);
+      toast.success('Request updated!', 'Your blood request has been updated successfully.');
+    } catch (err) {
+      toast.error('Could not update', err.response?.data?.message || 'Please try again.');
+    } finally {
+      setLoadingEdit(false);
+    }
+  };
+
+  const handleSubmitStory = async (e) => {
+    e.preventDefault();
+    setStoryLoading(true);
+    setStoryError('');
+    setStorySuccess('');
+    try {
+      const res = await axios.post('/api/stories', storyForm);
+      if (res.data.success) {
+        setStorySuccess('Your story has been shared!');
+        setStoryForm({ title: '', message: '' });
+        const storiesRes = await axios.get('/api/stories');
+        setStories(storiesRes.data.stories || []);
+      }
+    } catch (err) {
+      setStoryError(err.response?.data?.message || 'Failed to share story. Please try again.');
+    } finally {
+      setStoryLoading(false);
     }
   };
 
@@ -434,6 +523,12 @@ function Dashboard() {
               panel: 'notifications',
               badge: unreadCount > 0 ? unreadCount : null,
             },
+            {
+              name: 'Stories',
+              icon: FaHeart,
+              panel: 'stories',
+              badge: null,
+            },
           ].map(item => (
             <button
               key={item.panel}
@@ -504,21 +599,72 @@ function Dashboard() {
             </h2>
 
             {/* Stat cards */}
-            <div className="grid md:grid-cols-2 gap-6">
-              <div className="bg-white p-6 rounded-2xl shadow border border-red-100">
-                <h3 className="text-base font-medium text-gray-700 mb-3">Notifications</h3>
-                <div className="text-4xl font-bold text-red-600">{unreadCount}</div>
-                <p className="text-sm text-gray-600 mt-2">Unread</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-white p-5 rounded-2xl shadow border border-red-100 flex flex-col gap-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <FaBell className="text-red-400 text-base" />
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Unread</h3>
+                </div>
+                <div className="text-3xl font-extrabold text-red-600">{unreadCount}</div>
+                <p className="text-xs text-gray-400">Notifications</p>
               </div>
 
-              <div className="bg-white p-6 rounded-2xl shadow border border-red-100">
-                <h3 className="text-base font-medium text-gray-700 mb-3">
-                  {isDonor ? 'Pending Matches' : 'Active Requests'}
-                </h3>
-                <div className="text-4xl font-bold text-red-600">
+              <div className="bg-white p-5 rounded-2xl shadow border border-red-100 flex flex-col gap-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <FaClipboardList className="text-red-400 text-base" />
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                    {isDonor ? 'Matches' : 'Active'}
+                  </h3>
+                </div>
+                <div className="text-3xl font-extrabold text-red-600">
                   {(isDonor ? matchingRequests : myRequests).filter(r => r.status === 'pending').length}
                 </div>
+                <p className="text-xs text-gray-400">{isDonor ? 'Pending matches' : 'Pending requests'}</p>
               </div>
+
+              {isDonor && (
+                <>
+                  <div className="bg-white p-5 rounded-2xl shadow border border-green-100 flex flex-col gap-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <FaTint className="text-green-400 text-base" />
+                      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Donated</h3>
+                    </div>
+                    <div className="text-3xl font-extrabold text-green-600">{donations.length}</div>
+                    <p className="text-xs text-gray-400">Total donations</p>
+                  </div>
+                  <div className="bg-white p-5 rounded-2xl shadow border border-purple-100 flex flex-col gap-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <FaHandHoldingHeart className="text-purple-400 text-base" />
+                      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Lives</h3>
+                    </div>
+                    <div className="text-3xl font-extrabold text-purple-600">{donations.length}</div>
+                    <p className="text-xs text-gray-400">Lives helped</p>
+                  </div>
+                </>
+              )}
+
+              {isReceiver && (
+                <>
+                  <div className="bg-white p-5 rounded-2xl shadow border border-blue-100 flex flex-col gap-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <FaPlusCircle className="text-blue-400 text-base" />
+                      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Total</h3>
+                    </div>
+                    <div className="text-3xl font-extrabold text-blue-600">{myRequests.length}</div>
+                    <p className="text-xs text-gray-400">Requests made</p>
+                  </div>
+                  <div className="bg-white p-5 rounded-2xl shadow border border-green-100 flex flex-col gap-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <FaCheckCircle className="text-green-400 text-base" />
+                      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Received</h3>
+                    </div>
+                    <div className="text-3xl font-extrabold text-green-600">
+                      {myRequests.filter(r => r.status === 'fulfilled' || r.status === 'Fulfilled' || r.status === 'Completed').length}
+                    </div>
+                    <p className="text-xs text-gray-400">Fulfilled</p>
+                  </div>
+                </>
+              )}
             </div>
 
             {/* Eligibility overview for donors */}
@@ -1001,30 +1147,185 @@ function Dashboard() {
 
                           {/* Accepted confirmation (donor) */}
                           {isDonor && isAccepted && (
-                            <div className="mt-4 flex items-center gap-2 bg-blue-50 border border-blue-100 rounded-xl px-4 py-2.5">
-                              <FaCheckCircle className="text-blue-500 text-sm flex-shrink-0" />
-                              <p className="text-xs font-semibold text-blue-700">
-                                You accepted this request — please contact the patient
-                              </p>
+                            <div className="mt-4 bg-blue-50 border border-blue-200 rounded-2xl px-4 py-3 space-y-2">
+                              <div className="flex items-center gap-2">
+                                <FaCheckCircle className="text-blue-500 text-sm flex-shrink-0" />
+                                <p className="text-xs font-bold text-blue-700">
+                                  You are assigned as the donor — please visit the hospital to donate
+                                </p>
+                              </div>
+                              <div className="flex flex-wrap gap-x-4 gap-y-1 pl-5">
+                                {req.hospital && (
+                                  <span className="text-xs text-blue-600 flex items-center gap-1">
+                                    <FaHospital className="text-xs" /> {req.hospital}
+                                  </span>
+                                )}
+                                {req.location && req.location !== req.hospital && (
+                                  <span className="text-xs text-blue-600 flex items-center gap-1">
+                                    <FaMapMarkerAlt className="text-xs" /> {req.location}
+                                  </span>
+                                )}
+                                {req.contactPhone && (
+                                  <a
+                                    href={`tel:${req.contactPhone}`}
+                                    className="text-xs font-bold text-blue-700 hover:underline flex items-center gap-1"
+                                  >
+                                    <FaPhone className="text-xs" /> Call {req.contactPhone}
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* ── Cancel / Edit (receiver, pending only) ── */}
+                          {!isDonor && isPending && editingRequestId !== req._id && (
+                            <div className="mt-4 flex gap-2">
+                              <button
+                                onClick={() => handleStartEdit(req)}
+                                className="flex-1 py-2.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 border-2 border-blue-200 text-blue-600 hover:bg-blue-50 transition-all"
+                              >
+                                <FaEdit className="text-xs" /> Edit
+                              </button>
+                              <button
+                                onClick={() => handleCancelRequest(req._id)}
+                                disabled={loadingCancel === req._id}
+                                className={`flex-1 py-2.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 border-2 transition-all ${
+                                  loadingCancel === req._id
+                                    ? 'opacity-60 cursor-not-allowed border-gray-200 text-gray-400'
+                                    : 'border-red-200 text-red-600 hover:bg-red-50'
+                                }`}
+                              >
+                                {loadingCancel === req._id
+                                  ? <FaSpinner className="animate-spin text-xs" />
+                                  : <><FaBan className="text-xs" /> Cancel</>}
+                              </button>
+                            </div>
+                          )}
+
+                          {/* ── Inline Edit Form (receiver, pending only) ── */}
+                          {!isDonor && isPending && editingRequestId === req._id && (
+                            <div className="mt-4 bg-blue-50 border border-blue-200 rounded-2xl p-4 space-y-3">
+                              <p className="text-xs font-bold text-blue-700 mb-1">Edit Request</p>
+                              <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                  <label className="block text-xs text-gray-500 mb-1">Hospital</label>
+                                  <input
+                                    name="hospital"
+                                    value={editForm.hospital}
+                                    onChange={handleEditChange}
+                                    className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-xs text-gray-500 mb-1">Units</label>
+                                  <input
+                                    name="units"
+                                    type="number"
+                                    min="1"
+                                    max="10"
+                                    value={editForm.units}
+                                    onChange={handleEditChange}
+                                    className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-xs text-gray-500 mb-1">Location</label>
+                                  <input
+                                    name="location"
+                                    value={editForm.location}
+                                    onChange={handleEditChange}
+                                    className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-xs text-gray-500 mb-1">Phone</label>
+                                  <input
+                                    name="contactPhone"
+                                    value={editForm.contactPhone}
+                                    onChange={handleEditChange}
+                                    className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none"
+                                  />
+                                </div>
+                              </div>
+                              <div>
+                                <label className="block text-xs text-gray-500 mb-1">Urgency</label>
+                                <div className="flex gap-2">
+                                  {['normal', 'emergency'].map(u => (
+                                    <button
+                                      key={u}
+                                      type="button"
+                                      onClick={() => setEditForm(prev => ({ ...prev, urgency: u }))}
+                                      className={`flex-1 py-2 rounded-xl text-xs font-bold border-2 transition-all ${
+                                        editForm.urgency === u
+                                          ? 'border-blue-500 bg-blue-100 text-blue-700'
+                                          : 'border-gray-200 text-gray-500 hover:border-blue-300'
+                                      }`}
+                                    >
+                                      {u === 'emergency' ? '🚨 Emergency' : '🩸 Normal'}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                              <div>
+                                <label className="block text-xs text-gray-500 mb-1">Note</label>
+                                <textarea
+                                  name="note"
+                                  value={editForm.note}
+                                  onChange={handleEditChange}
+                                  rows="2"
+                                  className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none resize-none"
+                                />
+                              </div>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => setEditingRequestId(null)}
+                                  className="flex-1 py-2.5 rounded-xl text-sm font-semibold border-2 border-gray-200 text-gray-600 hover:bg-gray-50 transition-all"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  onClick={() => handleSubmitEdit(req._id)}
+                                  disabled={loadingEdit}
+                                  className="flex-[2] py-2.5 rounded-xl text-sm font-bold bg-blue-600 text-white hover:bg-blue-700 transition-all flex items-center justify-center gap-2"
+                                >
+                                  {loadingEdit ? <><FaSpinner className="animate-spin text-xs" /> Saving...</> : <><FaCheckCircle className="text-xs" /> Save Changes</>}
+                                </button>
+                              </div>
                             </div>
                           )}
 
                           {/* ── Mark as Received (receiver, accepted only) ── */}
                           {!isDonor && isAccepted && (
                             <div className="mt-4 space-y-2">
-                              <div className="flex items-start gap-2 bg-blue-50 border border-blue-100 rounded-xl px-4 py-3">
-                                <FaCheckCircle className="text-blue-500 text-sm flex-shrink-0 mt-0.5" />
-                                <div>
-                                  <p className="text-xs font-bold text-blue-700">A donor has accepted your request!</p>
-                                  {req.acceptedBy?.phone && (
-                                    <p className="text-xs text-blue-600 mt-0.5">
-                                      Contact: <span className="font-semibold">{req.acceptedBy.username}</span> · {req.acceptedBy.phone}
-                                    </p>
-                                  )}
-                                  {!req.acceptedBy?.phone && req.acceptedBy?.username && (
-                                    <p className="text-xs text-blue-600 mt-0.5">Donor: <span className="font-semibold">{req.acceptedBy.username}</span></p>
-                                  )}
+                              <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <FaHandHoldingHeart className="text-blue-500 text-base flex-shrink-0" />
+                                  <p className="text-sm font-bold text-blue-700">A donor has accepted your request!</p>
                                 </div>
+                                {req.acceptedBy && (
+                                  <div className="ml-6 space-y-1">
+                                    <p className="text-sm font-semibold text-gray-800">
+                                      {req.acceptedBy.username}
+                                    </p>
+                                    {req.acceptedBy.phone && (
+                                      <a
+                                        href={`tel:${req.acceptedBy.phone}`}
+                                        className="inline-flex items-center gap-2 text-sm font-bold text-blue-700 bg-blue-100 hover:bg-blue-200 px-3 py-1.5 rounded-xl transition-all"
+                                      >
+                                        <FaPhone className="text-xs" />
+                                        Call {req.acceptedBy.phone}
+                                      </a>
+                                    )}
+                                    {req.acceptedBy.email && (
+                                      <p className="text-xs text-gray-500 mt-1">
+                                        {req.acceptedBy.email}
+                                      </p>
+                                    )}
+                                    {!req.acceptedBy.phone && !req.acceptedBy.email && (
+                                      <p className="text-xs text-gray-400 italic">No contact info available — check notifications for details.</p>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                               <button
                                 onClick={() => handleFulfillRequest(req._id)}
@@ -1132,7 +1433,10 @@ function Dashboard() {
             {notifications.length > 0 ? (
               <div className="space-y-3">
                 {notifications.map((notif) => {
-                  const cfg = NOTIF_CONFIG[notif.type] || NOTIF_CONFIG.default;
+                  const isBroadcast = notif.type === 'general' && notif.data?.type === 'hospital_broadcast';
+                  const cfg = isBroadcast
+                    ? { icon: '📢', bg: 'bg-orange-50', border: 'border-orange-200', accent: 'bg-orange-500', label: 'Hospital Alert', labelBg: 'bg-orange-100 text-orange-700' }
+                    : (NOTIF_CONFIG[notif.type] || NOTIF_CONFIG.default);
                   const isNew = !notif.read;
                   const isBloodReq = notif.type === 'new_blood_request';
                   const isAccepted = notif.type === 'request_accepted';
@@ -1176,7 +1480,7 @@ function Dashboard() {
                         </p>
 
                         {/* ── Blood Request card ──────────────────────────── */}
-                        {isBloodReq && notif.data && (
+                        {isBloodReq && notif.data && (<>
                           <div className="mt-3 bg-white rounded-xl border border-red-100 p-3.5 flex items-start gap-3">
                             {/* Blood group badge */}
                             <div className="flex-shrink-0 w-12 h-12 rounded-xl bg-red-600 flex items-center justify-center shadow-sm">
@@ -1219,6 +1523,95 @@ function Dashboard() {
                             {/* Urgency flash */}
                             {notif.data.urgency === 'emergency' && isNew && (
                               <div className="flex-shrink-0 w-2 h-2 rounded-full bg-red-500 mt-1 animate-ping" />
+                            )}
+                          </div>
+
+                          {/* ── Accept / Cooldown action ── */}
+                          {isDonor && notif.data.requestId && (
+                            <div className="mt-3" onClick={e => e.stopPropagation()}>
+                              {!isAvailable ? (
+                                <div className="flex items-center gap-2 bg-orange-50 border border-orange-200 rounded-xl px-3 py-2">
+                                  <FaLock className="text-orange-500 text-xs flex-shrink-0" />
+                                  <p className="text-xs font-semibold text-orange-700">
+                                    You're in a 56-day cooldown — not eligible to donate yet.
+                                  </p>
+                                </div>
+                              ) : (
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={() => handleAcceptRequest(notif.data.requestId)}
+                                    disabled={loadingAccept === notif.data.requestId}
+                                    className={`flex-1 py-2 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all ${
+                                      loadingAccept === notif.data.requestId
+                                        ? 'bg-green-400 cursor-not-allowed text-white opacity-70'
+                                        : 'bg-green-600 hover:bg-green-700 text-white shadow-sm'
+                                    }`}
+                                  >
+                                    {loadingAccept === notif.data.requestId
+                                      ? <><FaSpinner className="animate-spin text-xs" /> Accepting...</>
+                                      : <><FaCheckCircle className="text-xs" /> Accept & Donate</>}
+                                  </button>
+                                  <button
+                                    onClick={() => { setActivePanel('requests'); }}
+                                    className="px-3 py-2 rounded-xl text-xs font-semibold text-gray-500 border border-gray-200 hover:bg-gray-50 transition-all"
+                                  >
+                                    View All
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </>)}
+
+                        {/* ── Hospital Broadcast card ─────────────────────── */}
+                        {isBroadcast && notif.data && (
+                          <div className="mt-3 bg-white rounded-xl border border-orange-100 p-3.5 space-y-3">
+                            {/* Hospital info row */}
+                            <div className="flex items-start gap-3">
+                              <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-orange-500 flex items-center justify-center shadow-sm">
+                                <FaHospital className="text-white text-base" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-bold text-gray-800">
+                                  {notif.data.hospitalName || 'Hospital'}
+                                </p>
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1">
+                                  <span className="text-xs text-gray-500 flex items-center gap-1">
+                                    <FaTint className="text-red-400 text-xs" />
+                                    Needs <strong className="ml-0.5">{notif.data.bloodGroup}</strong> donors
+                                  </span>
+                                  {notif.data.hospitalLocation && (
+                                    <span className="text-xs text-gray-500 flex items-center gap-1">
+                                      <FaMapMarkerAlt className="text-gray-400 text-xs" />
+                                      {notif.data.hospitalLocation}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Action buttons */}
+                            {isDonor && (
+                              <div className="flex gap-2" onClick={e => e.stopPropagation()}>
+                                {notif.data.hospitalPhone ? (
+                                  <a
+                                    href={`tel:${notif.data.hospitalPhone}`}
+                                    className="flex-1 py-2 rounded-xl text-sm font-bold flex items-center justify-center gap-2 bg-orange-500 hover:bg-orange-600 text-white transition-all shadow-sm"
+                                  >
+                                    <FaPhone className="text-xs" /> Call Hospital
+                                  </a>
+                                ) : (
+                                  <div className="flex-1 py-2 rounded-xl text-sm text-center text-gray-400 border border-dashed border-gray-200 flex items-center justify-center gap-1">
+                                    <FaPhone className="text-xs" /> No phone on file
+                                  </div>
+                                )}
+                                <button
+                                  onClick={() => setActivePanel('requests')}
+                                  className="flex-1 py-2 rounded-xl text-sm font-bold flex items-center justify-center gap-2 border-2 border-orange-200 text-orange-600 hover:bg-orange-50 transition-all"
+                                >
+                                  <FaClipboardList className="text-xs" /> View Requests
+                                </button>
+                              </div>
                             )}
                           </div>
                         )}
@@ -1280,6 +1673,130 @@ function Dashboard() {
             )}
           </div>
         )}
+        {/* Stories Panel */}
+        {activePanel === 'stories' && (
+          <div className="max-w-2xl space-y-6">
+
+            {/* Header */}
+            <div>
+              <h3 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
+                <span className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center">
+                  <FaHeart className="text-red-600 text-lg" />
+                </span>
+                Stories
+              </h3>
+              <p className="text-sm text-gray-500 mt-1 ml-[52px]">Share your experience and inspire others</p>
+            </div>
+
+            {/* Share your story form */}
+            <div className="bg-white rounded-2xl border border-red-100 shadow-sm p-5 space-y-4">
+              <h4 className="text-base font-bold text-gray-800 flex items-center gap-2">
+                <FaQuoteLeft className="text-red-400 text-sm" />
+                Share Your Story
+              </h4>
+
+              {storySuccess && (
+                <div className="flex items-center gap-2 bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-xl text-sm font-medium">
+                  <FaCheckCircle className="text-green-500" /> {storySuccess}
+                </div>
+              )}
+              {storyError && (
+                <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm">
+                  <FaExclamationCircle className="text-red-500" /> {storyError}
+                </div>
+              )}
+
+              <form onSubmit={handleSubmitStory} className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1.5">Title <span className="text-red-500">*</span></label>
+                  <input
+                    type="text"
+                    value={storyForm.title}
+                    onChange={e => setStoryForm(prev => ({ ...prev, title: e.target.value }))}
+                    required
+                    placeholder="e.g. How I saved a life on a rainy night"
+                    className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-red-400 focus:ring-2 focus:ring-red-100 outline-none text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1.5">Your Story <span className="text-red-500">*</span></label>
+                  <textarea
+                    value={storyForm.message}
+                    onChange={e => setStoryForm(prev => ({ ...prev, message: e.target.value }))}
+                    required
+                    rows="4"
+                    placeholder="Tell us about your experience as a donor or receiver... (min 20 characters)"
+                    className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-red-400 focus:ring-2 focus:ring-red-100 outline-none text-sm resize-none"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">{storyForm.message.length} / 20 min characters</p>
+                </div>
+                <button
+                  type="submit"
+                  disabled={storyLoading}
+                  className={`w-full py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all duration-200 ${
+                    storyLoading
+                      ? 'opacity-60 cursor-not-allowed bg-red-400 text-white'
+                      : 'bg-gradient-to-r from-red-600 to-rose-600 text-white hover:shadow-lg active:scale-[0.98]'
+                  }`}
+                >
+                  {storyLoading
+                    ? <><FaSpinner className="animate-spin text-sm" /> Sharing...</>
+                    : <><FaHeart className="text-sm" /> Share My Story</>}
+                </button>
+              </form>
+            </div>
+
+            {/* Stories feed */}
+            {stories.length > 0 ? (
+              <div className="space-y-4">
+                <p className="text-sm font-semibold text-gray-500">{stories.length} stor{stories.length === 1 ? 'y' : 'ies'} shared</p>
+                {stories.map((story) => (
+                  <div key={story._id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 hover:shadow-md transition-all">
+                    <div className="flex items-start gap-3 mb-3">
+                      <div className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm shadow-sm ${
+                        story.role === 'donor' ? 'bg-red-500' : story.role === 'hospital' ? 'bg-blue-500' : 'bg-purple-500'
+                      }`}>
+                        {story.name?.charAt(0)?.toUpperCase() || '?'}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-sm text-gray-800">{story.name}</span>
+                          <span className={`text-xs px-2 py-0.5 rounded-full font-semibold capitalize ${
+                            story.role === 'donor'
+                              ? 'bg-red-100 text-red-700'
+                              : story.role === 'hospital'
+                              ? 'bg-blue-100 text-blue-700'
+                              : 'bg-purple-100 text-purple-700'
+                          }`}>
+                            {story.role}
+                          </span>
+                          {story.location && (
+                            <span className="text-xs text-gray-400 flex items-center gap-1">
+                              <FaMapMarkerAlt className="text-gray-300 text-xs" />
+                              {story.location}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-400 mt-0.5">{timeAgo(story.createdAt)}</p>
+                      </div>
+                    </div>
+                    <h4 className="font-bold text-gray-900 text-sm mb-2">{story.title}</h4>
+                    <p className="text-sm text-gray-600 leading-relaxed">{story.message}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-gray-200">
+                <div className="inline-flex items-center justify-center w-16 h-16 bg-red-50 rounded-full mb-4">
+                  <FaHeart className="text-2xl text-red-300" />
+                </div>
+                <p className="text-lg font-semibold text-gray-700">No stories yet</p>
+                <p className="text-sm text-gray-400 mt-1">Be the first to share your experience!</p>
+              </div>
+            )}
+          </div>
+        )}
+
       </main>
     </div>
     </>
