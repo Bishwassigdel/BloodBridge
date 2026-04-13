@@ -4,6 +4,18 @@ import Notification from '../models/Notification.js';
 import User from '../models/user.js';
 import Donation from '../models/Donation.js';
 import { autoResetAvailability } from './authController.js';
+import { broadcastToBloodGroup, broadcastToAllBloodGroup, sendToUser } from '../sse.js';
+import nodemailer from 'nodemailer';
+import crypto from 'crypto';
+import dotenv from 'dotenv';
+dotenv.config();
+
+const createTransporter = () => nodemailer.createTransport({
+  service: 'gmail',
+  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+});
+
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
 /**
  * Create a new blood request (receiver creates request)
@@ -18,6 +30,7 @@ export const createBloodRequest = async (req, res) => {
       location,
       contactPhone,
       note,
+      coordinates, // { lat, lng } — saved silently for future map use
     } = req.body;
 
     if (!hospital || !bloodGroup || !units || !contactPhone) {
@@ -36,6 +49,7 @@ export const createBloodRequest = async (req, res) => {
       location: location || hospital,
       contactPhone,
       note,
+      coordinates: coordinates || { lat: null, lng: null },
       status: 'pending',
     });
 
@@ -89,12 +103,196 @@ export const createBloodRequest = async (req, res) => {
       // Continue — don't crash the request
     }
 
+    // ── SSE: Instant push to online matching donors ───────────────────────
+    try {
+      const ssePayload = {
+        requestId: request._id.toString(),
+        hospital,
+        bloodGroup,
+        units,
+        urgency,
+        location: location || hospital,
+        contactPhone,
+        requesterName: req.user?.username || 'A patient',
+        createdAt: request.createdAt,
+      };
+      broadcastToBloodGroup(bloodGroup, 'new_blood_request', ssePayload, req.user._id);
+    } catch (sseErr) {
+      console.warn('[SSE] Broadcast failed (non-fatal):', sseErr.message);
+    }
+
+    // ── Emergency Email: send to all available matching donors ───────────
+    if (urgency === 'emergency') {
+      try {
+        const emailDonors = await User.find({
+          role: 'donor',
+          bloodGroup,
+          isAvailable: true,
+          email: { $exists: true, $ne: '' },
+          _id: { $ne: req.user._id },
+        }).select('_id email username').lean();
+
+        if (emailDonors.length > 0) {
+          const transporter = createTransporter();
+          const tokenEntries = [];
+
+          await Promise.allSettled(emailDonors.map(async (donor) => {
+            const token = crypto.randomBytes(20).toString('hex');
+            tokenEntries.push({ donorId: donor._id, token, used: false, action: null });
+
+            const acceptUrl  = `${FRONTEND_URL}/emergency-respond?token=${token}&action=accept`;
+            const rejectUrl  = `${FRONTEND_URL}/emergency-respond?token=${token}&action=reject`;
+            const requesterName = req.user?.username || 'A patient';
+
+            const html = `
+              <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #fecaca;">
+                <!-- Header -->
+                <div style="background:#dc2626;padding:28px 32px;text-align:center;">
+                  <p style="color:#fff;font-size:13px;margin:0 0 4px;letter-spacing:1px;text-transform:uppercase;">BloodBridge Emergency</p>
+                  <h1 style="color:#fff;margin:0;font-size:26px;">🚨 Emergency Blood Needed</h1>
+                  <p style="color:#fecaca;margin:8px 0 0;font-size:14px;">Immediate response required</p>
+                </div>
+
+                <!-- Body -->
+                <div style="padding:28px 32px;">
+                  <p style="color:#374151;font-size:15px;margin:0 0 20px;">
+                    Hi <strong>${donor.username}</strong>, someone urgently needs your help right now.
+                  </p>
+
+                  <!-- Details card -->
+                  <div style="background:#fef2f2;border-left:4px solid #dc2626;border-radius:8px;padding:20px;margin:0 0 24px;">
+                    <table style="width:100%;border-collapse:collapse;">
+                      <tr><td style="padding:5px 0;color:#6b7280;font-size:13px;width:130px;">Blood Group</td>
+                          <td style="padding:5px 0;color:#111827;font-weight:bold;font-size:18px;">${bloodGroup}</td></tr>
+                      <tr><td style="padding:5px 0;color:#6b7280;font-size:13px;">Units Needed</td>
+                          <td style="padding:5px 0;color:#111827;font-weight:600;">${units} unit${units > 1 ? 's' : ''}</td></tr>
+                      <tr><td style="padding:5px 0;color:#6b7280;font-size:13px;">Hospital</td>
+                          <td style="padding:5px 0;color:#111827;font-weight:600;">${hospital}</td></tr>
+                      <tr><td style="padding:5px 0;color:#6b7280;font-size:13px;">Location</td>
+                          <td style="padding:5px 0;color:#111827;">${location || hospital}</td></tr>
+                      <tr><td style="padding:5px 0;color:#6b7280;font-size:13px;">Contact</td>
+                          <td style="padding:5px 0;color:#dc2626;font-weight:600;">${contactPhone}</td></tr>
+                      <tr><td style="padding:5px 0;color:#6b7280;font-size:13px;">Requested by</td>
+                          <td style="padding:5px 0;color:#111827;">${requesterName}</td></tr>
+                    </table>
+                  </div>
+
+                  <p style="color:#374151;font-size:14px;margin:0 0 24px;">
+                    Can you donate? Click one of the buttons below — <strong>no login required</strong>.
+                  </p>
+
+                  <!-- Action buttons -->
+                  <table style="width:100%;border-collapse:collapse;">
+                    <tr>
+                      <td style="padding:0 8px 0 0;width:50%;">
+                        <a href="${acceptUrl}" style="display:block;text-align:center;padding:16px;background:#16a34a;color:#fff;text-decoration:none;border-radius:10px;font-weight:bold;font-size:15px;">
+                          ✅ Yes, I Can Donate
+                        </a>
+                      </td>
+                      <td style="padding:0 0 0 8px;width:50%;">
+                        <a href="${rejectUrl}" style="display:block;text-align:center;padding:16px;background:#6b7280;color:#fff;text-decoration:none;border-radius:10px;font-weight:bold;font-size:15px;">
+                          ❌ Cannot Donate Now
+                        </a>
+                      </td>
+                    </tr>
+                  </table>
+
+                  <p style="color:#9ca3af;font-size:12px;margin:24px 0 0;text-align:center;">
+                    This link is unique to you and expires once used or the request is fulfilled.<br>
+                    Emergency hotline: <strong>01-4288485</strong>
+                  </p>
+                </div>
+
+                <!-- Footer -->
+                <div style="background:#f9fafb;padding:16px 32px;border-top:1px solid #f0f0f0;text-align:center;">
+                  <p style="color:#9ca3af;font-size:12px;margin:0;">BloodBridge – Saving lives, one drop at a time 🩸</p>
+                </div>
+              </div>
+            `;
+
+            await transporter.sendMail({
+              from: `"BloodBridge 🚨" <${process.env.EMAIL_USER}>`,
+              to: donor.email,
+              subject: `🚨 URGENT: ${bloodGroup} blood needed at ${hospital} — Can you help?`,
+              html,
+            });
+          }));
+
+          // Save all tokens to the request
+          await BloodRequest.findByIdAndUpdate(request._id, {
+            $push: { emailTokens: { $each: tokenEntries } },
+          });
+
+          console.log(`[Emergency Email] Sent to ${emailDonors.length} donors for request ${request._id}`);
+        }
+      } catch (emailErr) {
+        console.error('[Emergency Email] Failed (non-fatal):', emailErr.message);
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
+    // ── Auto-escalation: if still pending after 10 min, re-notify cooldown donors ──
+    if (urgency === 'emergency') {
+      const requestId = request._id;
+      const requesterId = req.user._id;
+      setTimeout(async () => {
+        try {
+          const stillPending = await BloodRequest.findOne({ _id: requestId, status: 'pending' });
+          if (!stillPending) return; // Already accepted or cancelled
+
+          // Re-notify cooldown donors via DB notifications
+          const cooldownDonors = await User.find({
+            role: 'donor',
+            bloodGroup,
+            isAvailable: false,
+            _id: { $ne: requesterId },
+          }).select('_id').lean();
+
+          if (cooldownDonors.length > 0) {
+            await Notification.insertMany(cooldownDonors.map(d => ({
+              user: d._id,
+              message: `🚨 STILL URGENT — Emergency ${bloodGroup} blood (${units} units) needed at ${hospital}. No donor has responded yet. Can you help?`,
+              type: 'new_blood_request',
+              severity: 'high',
+              data: {
+                requestId: requestId.toString(),
+                hospital, bloodGroup, units,
+                urgency: 'emergency',
+                contactPhone,
+                isEscalation: true,
+              },
+            })));
+
+            // SSE escalation push
+            broadcastToAllBloodGroup(bloodGroup, 'sos_escalation', {
+              requestId: requestId.toString(),
+              hospital, bloodGroup, units, contactPhone,
+              message: `🚨 STILL URGENT — No donor yet for ${bloodGroup} at ${hospital}`,
+            }, requesterId);
+          }
+
+          // Notify receiver: still no donor
+          sendToUser(requesterId, 'sos_no_response', {
+            requestId: requestId.toString(),
+            escalatedCount: cooldownDonors.length,
+            message: 'No donor accepted yet. Re-notifying more donors...',
+          });
+
+          console.log(`[Auto-escalation] SOS ${requestId}: notified ${cooldownDonors.length} cooldown donors`);
+        } catch (escErr) {
+          console.error('[Auto-escalation] Error:', escErr.message);
+        }
+      }, 10 * 60 * 1000); // 10 minutes
+    }
+    // ─────────────────────────────────────────────────────────────────────
+
     res.status(201).json({
       success: true,
       message: urgency === 'emergency'
         ? 'Emergency request saved! WhatsApp will open on frontend.'
         : `Blood request created successfully! ${notifiedCount} matching donor(s) have been notified.`,
       request,
+      notifiedCount,
     });
   } catch (err) {
     console.error('Create blood request CRASH:', {
@@ -274,6 +472,23 @@ export const acceptBloodRequest = async (req, res) => {
 
     await request.populate('requester', 'username phone email');
     await request.populate('acceptedBy', 'username phone email');
+
+    // ── SSE: Instantly notify receiver that a donor was found ─────────────
+    try {
+      sendToUser(request.requester._id, 'sos_accepted', {
+        requestId: request._id.toString(),
+        donorName: req.user.username,
+        donorPhone: req.user.phone,
+        donorEmail: req.user.email,
+        bloodGroup: request.bloodGroup,
+        units: request.units,
+        hospital: request.hospital,
+        message: `${req.user.username} accepted your blood request!`,
+      });
+    } catch (sseErr) {
+      console.warn('[SSE] Accept push failed (non-fatal):', sseErr.message);
+    }
+    // ─────────────────────────────────────────────────────────────────────
 
     res.status(200).json({
       success: true,
@@ -712,5 +927,203 @@ export const assignDonorToRequest = async (req, res) => {
   } catch (err) {
     console.error('Assign donor error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+/**
+ * Public platform stats — no auth required
+ * GET /api/blood/stats
+ */
+export const getPlatformStats = async (req, res) => {
+  try {
+    // Start of current month
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const [
+      totalDonors,
+      totalHospitals,
+      totalDonations,
+      acceptedRequests,
+      monthlyRequests,
+      monthlyFulfilled,
+    ] = await Promise.all([
+      User.countDocuments({ role: 'donor' }),
+      User.countDocuments({ role: 'hospital' }),
+      Donation.countDocuments({}),
+      BloodRequest.find({ status: { $in: ['accepted', 'fulfilled'] } })
+        .select('createdAt updatedAt')
+        .lean(),
+      BloodRequest.countDocuments({ createdAt: { $gte: monthStart } }),
+      BloodRequest.countDocuments({ status: 'fulfilled', createdAt: { $gte: monthStart } }),
+    ]);
+
+    // Average response time in minutes (createdAt → updatedAt on accepted/fulfilled)
+    let avgResponseMins = 0;
+    if (acceptedRequests.length > 0) {
+      const totalMins = acceptedRequests.reduce((sum, r) => {
+        const diff = (new Date(r.updatedAt) - new Date(r.createdAt)) / 60000;
+        return sum + Math.max(0, diff);
+      }, 0);
+      avgResponseMins = Math.round(totalMins / acceptedRequests.length);
+    }
+
+    // Success rate = fulfilled / total requests this month (0 if no requests yet)
+    const successRate = monthlyRequests > 0
+      ? Math.round((monthlyFulfilled / monthlyRequests) * 100)
+      : 0;
+
+    res.status(200).json({
+      success: true,
+      stats: {
+        donors:          totalDonors,
+        hospitals:       totalHospitals,
+        donations:       totalDonations,
+        responseTime:    avgResponseMins,
+        monthlyRequests,
+        successRate,
+      },
+    });
+  } catch (err) {
+    console.error('Platform stats error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+/**
+ * Handle donor email response (accept / reject) via token — NO auth required
+ * GET /api/blood/email-respond?token=xxx&action=accept|reject
+ */
+export const emailRespondToRequest = async (req, res) => {
+  try {
+    const { token, action } = req.query;
+
+    if (!token || !['accept', 'reject'].includes(action)) {
+      return res.status(400).json({ success: false, message: 'Invalid token or action.' });
+    }
+
+    // Find request containing this token
+    const request = await BloodRequest.findOne({ 'emailTokens.token': token })
+      .populate('requester', 'username phone email');
+
+    if (!request) {
+      return res.status(404).json({ success: false, message: 'This link is invalid or has expired.' });
+    }
+
+    const tokenEntry = request.emailTokens.find(t => t.token === token);
+
+    if (tokenEntry.used) {
+      return res.status(400).json({
+        success: false,
+        message: tokenEntry.action === 'accepted'
+          ? 'You already accepted this request. Thank you!'
+          : 'You already responded to this request.',
+        alreadyUsed: true,
+        action: tokenEntry.action,
+      });
+    }
+
+    if (request.status !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: `This request is already ${request.status}. No action needed.`,
+        requestStatus: request.status,
+      });
+    }
+
+    // ── REJECT ────────────────────────────────────────────────────────────
+    if (action === 'reject') {
+      tokenEntry.used = true;
+      tokenEntry.action = 'rejected';
+      await request.save();
+      return res.status(200).json({
+        success: true,
+        action: 'rejected',
+        message: 'Thank you for letting us know. We will find another donor.',
+      });
+    }
+
+    // ── ACCEPT ────────────────────────────────────────────────────────────
+    const donor = await User.findById(tokenEntry.donorId);
+    if (!donor) {
+      return res.status(404).json({ success: false, message: 'Donor account not found.' });
+    }
+
+    // 56-day eligibility check
+    if (donor.lastDonation) {
+      const daysSince = (Date.now() - new Date(donor.lastDonation)) / (1000 * 60 * 60 * 24);
+      if (daysSince < 56) {
+        const daysLeft = Math.ceil(56 - daysSince);
+        return res.status(403).json({
+          success: false,
+          message: `You are not eligible yet — ${daysLeft} more day(s) needed before you can donate again.`,
+          daysLeft,
+        });
+      }
+    }
+
+    // Accept the request
+    request.status   = 'accepted';
+    request.acceptedBy = tokenEntry.donorId;
+    tokenEntry.used  = true;
+    tokenEntry.action = 'accepted';
+    await request.save();
+
+    // Auto-record donation + start cooldown
+    await Donation.create({
+      donor:     tokenEntry.donorId,
+      hospital:  request.hospital,
+      bloodGroup: request.bloodGroup,
+      units:     request.units,
+      notes:     'Accepted via emergency email link',
+      donatedAt: new Date(),
+    });
+
+    await User.findByIdAndUpdate(tokenEntry.donorId, {
+      lastDonation: new Date(),
+      isAvailable: false,
+    });
+
+    // Notify receiver in DB
+    await Notification.create({
+      user:    request.requester._id,
+      message: `Your emergency blood request at ${request.hospital} has been accepted by ${donor.username}! Contact: ${donor.phone}`,
+      type:    'request_accepted',
+      data: {
+        requestId:    request._id,
+        donorName:    donor.username,
+        contactPhone: donor.phone,
+        donorEmail:   donor.email,
+      },
+    });
+
+    // SSE push to receiver if online
+    try {
+      sendToUser(request.requester._id, 'sos_accepted', {
+        requestId:  request._id.toString(),
+        donorName:  donor.username,
+        donorPhone: donor.phone,
+        donorEmail: donor.email,
+        bloodGroup: request.bloodGroup,
+        units:      request.units,
+        hospital:   request.hospital,
+        message:    `${donor.username} accepted your emergency request via email!`,
+      });
+    } catch (_) {}
+
+    return res.status(200).json({
+      success: true,
+      action: 'accepted',
+      message: `Thank you ${donor.username}! Your acceptance has been recorded. Please go to ${request.hospital} as soon as possible.`,
+      hospital: request.hospital,
+      bloodGroup: request.bloodGroup,
+      units: request.units,
+      contactPhone: request.requester?.phone,
+      requesterName: request.requester?.username,
+    });
+
+  } catch (err) {
+    console.error('Email respond error:', err);
+    res.status(500).json({ success: false, message: 'Server error. Please try again.' });
   }
 };

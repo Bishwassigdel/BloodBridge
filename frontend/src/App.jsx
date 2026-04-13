@@ -8,6 +8,9 @@ import Register from './pages/Register';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import VerifyEmail from './pages/VerifyEmail';
+import SearchDonors from './pages/SearchDonors';
+import Contact from './pages/Contact';
+import SubmitStory from './pages/SubmitStory';
 
 // ── Protected Pages ─────────────────────────────────────────────────────
 import Dashboard from './pages/dashboard';     
@@ -16,6 +19,7 @@ import BloodRequest from './pages/BloodRequest';     // optional standalone requ
 import Profile from './pages/Profile';               // view profile
 import EditProfile from './pages/EditProfile';       // universal edit profile form (works for all user types)
 import BloodTransfer from './pages/BloodTransfer';    // blood transfer acceptance
+import EmergencyRespond from './pages/EmergencyRespond'; // donor email accept/reject (no login needed)
 
 // ── Components ──────────────────────────────────────────────────────────
 import ProtectedRoute from './components/ProtectedRoute';
@@ -33,6 +37,10 @@ function App() {
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/verify-email" element={<VerifyEmail />} />
         <Route path="/blood-transfer" element={<BloodTransfer />} />
+        <Route path="/emergency-respond" element={<EmergencyRespond />} />
+        <Route path="/search-donors" element={<SearchDonors />} />
+        <Route path="/contact" element={<Contact />} />
+        <Route path="/submit-story" element={<SubmitStory />} />
 
         {/* ── Protected Routes (require login) ─────────────────────────────── */}
         <Route element={<ProtectedRoute />}>

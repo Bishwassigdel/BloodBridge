@@ -1,5 +1,5 @@
 // src/pages/Dashboard.jsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import DonorEligibility from '../components/DonorEligibility';
@@ -32,7 +32,17 @@ import {
   FaBan,
   FaHandHoldingHeart,
   FaQuoteLeft,
+  FaWhatsapp,
+  FaSatelliteDish,
+  FaTimesCircle,
+  FaCalendarAlt,
+  FaCalendarCheck,
+  FaUsers,
 } from 'react-icons/fa';
+
+// Emergency hotline
+const EMERGENCY_HOTLINE = '01-4288485';
+const EMERGENCY_WHATSAPP = '97714288485';
 
 const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
 import axios from 'axios';
@@ -73,6 +83,22 @@ const NOTIF_CONFIG = {
     label: 'Life Saved!',
     labelBg: 'bg-purple-100 text-purple-700',
   },
+  event_notification: {
+    icon: '📅',
+    bg: 'bg-purple-50',
+    border: 'border-purple-200',
+    accent: 'bg-purple-500',
+    label: 'Event',
+    labelBg: 'bg-purple-100 text-purple-700',
+  },
+  event_reminder: {
+    icon: '⏰',
+    bg: 'bg-yellow-50',
+    border: 'border-yellow-200',
+    accent: 'bg-yellow-500',
+    label: 'Reminder',
+    labelBg: 'bg-yellow-100 text-yellow-700',
+  },
   default: {
     icon: '🔔',
     bg: 'bg-blue-50',
@@ -95,6 +121,9 @@ function Dashboard() {
   const [matchingRequests, setMatchingRequests] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [myRequests, setMyRequests] = useState([]);
+  const [upcomingEvents, setUpcomingEvents] = useState([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [rsvpLoading, setRsvpLoading] = useState(null); // eventId being RSVPed
 
   // Toast notifications
   const toast = useToast();
@@ -141,6 +170,27 @@ function Dashboard() {
   const isDonor = user?.role === 'donor';
   const isReceiver = user?.role === 'receiver';
 
+  // ── Expanded notification state ─────────────────────────────────────────
+  const [expandedNotifId, setExpandedNotifId] = useState(null);
+  // ────────────────────────────────────────────────────────────────────────
+
+  // ── SOS State ───────────────────────────────────────────────────────────
+  const [sosModalOpen, setSosModalOpen] = useState(false);
+  const [sosUnits, setSosUnits] = useState(1);
+  const [sosHospital, setSosHospital] = useState('');
+  const [sosLoading, setSosLoading] = useState(false);
+  // Active SOS tracking (replaces button with live status card)
+  const [activeSOS, setActiveSOS] = useState(null);
+  // { requestId, hospital, bloodGroup, units, notifiedCount, sentAt, donorFound: null | { name, phone, email } }
+  // Cooldown: prevent re-sending SOS for 10 min
+  const [sosCooldownUntil, setSosCooldownUntil] = useState(null);
+  // Donor accepted info — shown to donor after they accept
+  const [donorAcceptedInfo, setDonorAcceptedInfo] = useState(null);
+  // { patientName, patientPhone, hospital, bloodGroup }
+  // SSE ref
+  const sseRef = useRef(null);
+  // ────────────────────────────────────────────────────────────────────────
+
   const fetchData = async (isRetry = false) => {
     if (!localStorage.getItem('token')) {
       navigate('/login');
@@ -154,6 +204,7 @@ function Dashboard() {
       const promises = [
         axios.get('/api/notifications'),
         axios.get('/api/stories'),
+        axios.get('/api/events'),
       ];
 
       if (isDonor) {
@@ -174,6 +225,9 @@ function Dashboard() {
       }
       if (results[idx++].status === 'fulfilled') {
         setStories(results[idx - 1].value.data.stories || []);
+      }
+      if (results[idx++].status === 'fulfilled') {
+        setUpcomingEvents(results[idx - 1].value.data.events || []);
       }
 
       if (isDonor) {
@@ -213,6 +267,261 @@ function Dashboard() {
     return () => clearInterval(interval);
   }, [isDonor, isReceiver, navigate, user?.role, errorRetryCount]);
 
+  // ── SSE: Real-time connection ────────────────────────────────────────────
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (!token || !user) return;
+
+    const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+    const cleanToken = token.replace(/^["']+|["']+$/g, '').trim();
+    const es = new EventSource(`${apiBase}/api/sse?token=${encodeURIComponent(cleanToken)}`);
+    sseRef.current = es;
+
+    es.addEventListener('connected', () => {
+      console.log('[SSE] Connected ✅');
+    });
+
+    // ── DONOR: New emergency SOS received ───────────────────────────────
+    es.addEventListener('new_blood_request', (e) => {
+      const data = JSON.parse(e.data);
+      // Add to matching requests list instantly
+      setMatchingRequests(prev => {
+        const exists = prev.some(r => r._id === data.requestId);
+        if (exists) return prev;
+        const newReq = {
+          _id: data.requestId,
+          hospital: data.hospital,
+          bloodGroup: data.bloodGroup,
+          units: data.units,
+          urgency: data.urgency,
+          location: data.location,
+          contactPhone: data.contactPhone,
+          status: 'pending',
+          createdAt: data.createdAt,
+          requester: { username: data.requesterName },
+        };
+        // Emergency goes first
+        if (data.urgency === 'emergency') return [newReq, ...prev];
+        return [...prev, newReq];
+      });
+      // Also add a notification
+      setNotifications(prev => [{
+        _id: `sse_${Date.now()}`,
+        type: 'new_blood_request',
+        message: `New ${data.urgency === 'emergency' ? '🚨 EMERGENCY' : ''} blood request for ${data.bloodGroup} (${data.units} units) at ${data.hospital}`,
+        read: false,
+        createdAt: new Date().toISOString(),
+        data,
+      }, ...prev]);
+
+      // Play sound for emergency
+      if (data.urgency === 'emergency') {
+        playAlertSound();
+        toast.error('🚨 EMERGENCY REQUEST', `${data.bloodGroup} blood needed at ${data.hospital}!`, 8000);
+      }
+    });
+
+    // ── DONOR: Escalation — still no donor after 10 min ─────────────────
+    es.addEventListener('sos_escalation', (e) => {
+      const data = JSON.parse(e.data);
+      playAlertSound();
+      toast.error('🚨 STILL URGENT', data.message, 10000);
+    });
+
+    // ── RECEIVER: Donor found! ───────────────────────────────────────────
+    es.addEventListener('sos_accepted', (e) => {
+      const data = JSON.parse(e.data);
+      // Update activeSOS with donor info
+      setActiveSOS(prev => {
+        if (!prev || prev.requestId !== data.requestId) return prev;
+        return { ...prev, donorFound: { name: data.donorName, phone: data.donorPhone, email: data.donorEmail } };
+      });
+      // Update myRequests
+      setMyRequests(prev => prev.map(r =>
+        r._id === data.requestId
+          ? { ...r, status: 'accepted', acceptedBy: { username: data.donorName, phone: data.donorPhone, email: data.donorEmail } }
+          : r
+      ));
+      toast.success('✅ Donor Found!', `${data.donorName} is coming to help!`, 8000);
+    });
+
+    // ── RECEIVER: No donor after 10 min ────────────────────────────────
+    es.addEventListener('sos_no_response', (e) => {
+      const data = JSON.parse(e.data);
+      setActiveSOS(prev => prev ? { ...prev, noResponse: true, escalatedCount: data.escalatedCount } : prev);
+      toast.error('⏳ No Donor Yet', 'We re-notified more donors. Please also call the hotline.', 10000);
+    });
+
+    // ── NEW EVENT: Hospital posted a donation drive ─────────────────────
+    es.addEventListener('new_event', (e) => {
+      const data = JSON.parse(e.data);
+      setUpcomingEvents(prev => {
+        const exists = prev.some(ev => ev._id === data.eventId);
+        if (exists) return prev;
+        return [{
+          _id: data.eventId,
+          title: data.title,
+          hospitalName: data.hospitalName,
+          date: data.date,
+          time: data.time,
+          location: data.location,
+          bloodGroupsNeeded: data.bloodGroupsNeeded,
+          status: 'upcoming',
+          rsvps: [],
+        }, ...prev];
+      });
+      setNotifications(prev => [{
+        _id: `sse_evt_${Date.now()}`,
+        type: 'event_notification',
+        message: `📅 New donation drive: "${data.title}" at ${data.location}`,
+        read: false,
+        createdAt: new Date().toISOString(),
+        data,
+      }, ...prev]);
+      toast.success('📅 New Event!', `${data.hospitalName} is hosting a blood donation drive!`, 7000);
+    });
+
+    return () => {
+      es.close();
+      sseRef.current = null;
+    };
+  }, [user?._id]);
+
+  // ── Play alert sound (emergency) ────────────────────────────────────────
+  const playAlertSound = useCallback(() => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, ctx.currentTime);
+      osc.frequency.setValueAtTime(660, ctx.currentTime + 0.15);
+      osc.frequency.setValueAtTime(880, ctx.currentTime + 0.3);
+      gain.gain.setValueAtTime(0.3, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.5);
+    } catch (_) {}
+  }, []);
+
+  // ── RSVP to event ───────────────────────────────────────────────────────
+  const handleRSVP = async (eventId, status) => {
+    setRsvpLoading(eventId);
+    try {
+      const res = await axios.post(`/api/events/${eventId}/rsvp`, { status });
+      if (res.data.success) {
+        setUpcomingEvents(prev => prev.map(ev =>
+          ev._id !== eventId ? ev :
+          {
+            ...ev,
+            rsvps: ev.rsvps
+              ? ev.rsvps.some(r => r.user === user._id)
+                ? ev.rsvps.map(r => r.user === user._id ? { ...r, status } : r)
+                : [...ev.rsvps, { user: user._id, status }]
+              : [{ user: user._id, status }],
+          }
+        ));
+        toast.success(status === 'attending' ? '✅ RSVP Confirmed!' : 'RSVP Updated', res.data.message);
+      }
+    } catch (err) {
+      toast.error('RSVP failed', err.response?.data?.message || 'Please try again.');
+    } finally {
+      setRsvpLoading(null);
+    }
+  };
+  // ────────────────────────────────────────────────────────────────────────
+
+  // ── SOS Submit ──────────────────────────────────────────────────────────
+  const handleSOSSubmit = async () => {
+    if (!sosHospital.trim()) {
+      toast.error('Hospital required', 'Please enter the hospital name.');
+      return;
+    }
+    setSosLoading(true);
+    try {
+      // Capture GPS coordinates silently (map-ready for later)
+      let coordinates = { lat: null, lng: null };
+      try {
+        await new Promise((resolve) => {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => { coordinates = { lat: pos.coords.latitude, lng: pos.coords.longitude }; resolve(); },
+            () => resolve(), // Fail silently
+            { timeout: 3000 }
+          );
+        });
+      } catch (_) {}
+
+      const res = await axios.post('/api/blood/request', {
+        hospital: sosHospital,
+        bloodGroup: user?.bloodGroup,
+        units: sosUnits,
+        urgency: 'emergency',
+        location: user?.location || sosHospital,
+        contactPhone: user?.phone,
+        note: 'SOS — Sent via emergency button',
+        coordinates,
+      });
+
+      if (res.data.success) {
+        const notifiedCount = res.data.notifiedCount || 0;
+        setActiveSOS({
+          requestId: res.data.request._id,
+          hospital: sosHospital,
+          bloodGroup: user?.bloodGroup,
+          units: sosUnits,
+          notifiedCount,
+          sentAt: new Date(),
+          donorFound: null,
+          noResponse: false,
+        });
+        setSosModalOpen(false);
+        setSosCooldownUntil(new Date(Date.now() + 10 * 60 * 1000));
+
+        // Refresh my requests
+        const reqRes = await axios.get('/api/blood/my-requests');
+        setMyRequests(reqRes.data.requests || []);
+
+        // Auto-open WhatsApp to hotline
+        const msg = encodeURIComponent(
+          `Emergency blood request: ${user?.bloodGroup} (${sosUnits} units) needed at ${sosHospital}. Contact: ${user?.phone}`
+        );
+        setTimeout(() => window.open(`https://wa.me/${EMERGENCY_WHATSAPP}?text=${msg}`, '_blank'), 1000);
+
+        // Auto-notify emergency contact via WhatsApp if saved
+        if (user?.emergencyContact?.phone) {
+          const ecMsg = encodeURIComponent(
+            `⚠️ ${user.username} has sent an emergency blood request at ${sosHospital}. Please assist. Contact: ${user.phone}`
+          );
+          setTimeout(() => window.open(`https://wa.me/${user.emergencyContact.phone.replace(/[^0-9]/g, '')}?text=${ecMsg}`, '_blank'), 2500);
+        }
+
+        toast.success('🚨 SOS Sent!', `${notifiedCount} donors notified. WhatsApp opening...`, 6000);
+      }
+    } catch (err) {
+      toast.error('SOS Failed', err.response?.data?.message || 'Please try again.');
+    } finally {
+      setSosLoading(false);
+    }
+  };
+
+  // Cancel active SOS
+  const handleCancelSOS = async () => {
+    if (!activeSOS) return;
+    try {
+      await axios.patch(`/api/blood/${activeSOS.requestId}/cancel`, {});
+      setActiveSOS(null);
+      setSosCooldownUntil(null);
+      toast.success('SOS Cancelled', 'Your emergency request has been cancelled.');
+      const reqRes = await axios.get('/api/blood/my-requests');
+      setMyRequests(reqRes.data.requests || []);
+    } catch (err) {
+      toast.error('Could not cancel', err.response?.data?.message || 'Please try again.');
+    }
+  };
+  // ────────────────────────────────────────────────────────────────────────
+
   const handleRetry = () => setErrorRetryCount(prev => prev + 1);
 
   const handleLogout = () => {
@@ -242,6 +551,17 @@ function Dashboard() {
 
       // Show the LifeSaver modal 🎉
       setLifeSaverModal({ open: true, request: acceptedReq || null });
+
+      // Show donor accepted info card (with Call/WhatsApp buttons)
+      if (acceptedReq) {
+        setDonorAcceptedInfo({
+          patientName: acceptedReq.requester?.username || 'Patient',
+          patientPhone: acceptedReq.contactPhone || acceptedReq.requester?.phone,
+          hospital: acceptedReq.hospital,
+          bloodGroup: acceptedReq.bloodGroup,
+          units: acceptedReq.units,
+        });
+      }
     } catch (err) {
       toast.error(
         'Could not accept request',
@@ -524,6 +844,12 @@ function Dashboard() {
               badge: unreadCount > 0 ? unreadCount : null,
             },
             {
+              name: 'Events',
+              icon: FaCalendarAlt,
+              panel: 'events',
+              badge: upcomingEvents.length > 0 ? upcomingEvents.length : null,
+            },
+            {
               name: 'Stories',
               icon: FaHeart,
               panel: 'stories',
@@ -667,6 +993,152 @@ function Dashboard() {
               )}
             </div>
 
+            {/* ── SOS BUTTON (Receiver only) ─────────────────────────── */}
+            {isReceiver && (
+              <div className="mt-2">
+                {/* Live Status Card — shown after SOS is sent */}
+                {activeSOS && (
+                  <div className={`rounded-2xl p-5 border-2 shadow-lg ${activeSOS.donorFound ? 'bg-green-50 border-green-400' : activeSOS.noResponse ? 'bg-orange-50 border-orange-400' : 'bg-red-50 border-red-400'}`}>
+                    {activeSOS.donorFound ? (
+                      /* ── Donor Found Card ── */
+                      <>
+                        <div className="flex items-center gap-3 mb-4">
+                          <span className="text-3xl">✅</span>
+                          <div>
+                            <p className="text-lg font-bold text-green-800">Donor Found!</p>
+                            <p className="text-sm text-green-600">{activeSOS.donorFound.name} is coming to help</p>
+                          </div>
+                        </div>
+                        <div className="bg-white rounded-xl p-4 mb-4 text-sm text-gray-700 space-y-1">
+                          <p><span className="font-semibold">Blood:</span> {activeSOS.bloodGroup} · {activeSOS.units} unit(s)</p>
+                          <p><span className="font-semibold">Hospital:</span> {activeSOS.hospital}</p>
+                          <p><span className="font-semibold">Donor:</span> {activeSOS.donorFound.name}</p>
+                        </div>
+                        <div className="flex gap-3">
+                          <a
+                            href={`tel:${activeSOS.donorFound.phone}`}
+                            className="flex-1 flex items-center justify-center gap-2 py-3 bg-green-600 text-white rounded-xl font-semibold hover:bg-green-700 transition text-sm"
+                          >
+                            <FaPhone /> Call Donor
+                          </a>
+                          <a
+                            href={`https://wa.me/${(activeSOS.donorFound.phone || '').replace(/[^0-9]/g, '')}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="flex-1 flex items-center justify-center gap-2 py-3 bg-[#25D366] text-white rounded-xl font-semibold hover:opacity-90 transition text-sm"
+                          >
+                            <FaWhatsapp /> WhatsApp
+                          </a>
+                        </div>
+                      </>
+                    ) : activeSOS.noResponse ? (
+                      /* ── No Response Card ── */
+                      <>
+                        <div className="flex items-center gap-3 mb-3">
+                          <span className="text-2xl">🔴</span>
+                          <div>
+                            <p className="font-bold text-orange-800">Still No Donor</p>
+                            <p className="text-sm text-orange-600">{activeSOS.escalatedCount || 0} more donors re-notified</p>
+                          </div>
+                        </div>
+                        <a
+                          href={`tel:${EMERGENCY_HOTLINE}`}
+                          className="w-full flex items-center justify-center gap-2 py-3 bg-red-600 text-white rounded-xl font-semibold hover:bg-red-700 transition text-sm mb-2"
+                        >
+                          <FaPhone /> Call Hotline: {EMERGENCY_HOTLINE}
+                        </a>
+                        <button onClick={handleCancelSOS} className="w-full py-2 text-sm text-gray-500 hover:text-red-600 transition">
+                          Cancel SOS
+                        </button>
+                      </>
+                    ) : (
+                      /* ── Waiting Card ── */
+                      <>
+                        <div className="flex items-center gap-3 mb-3">
+                          <span className="text-2xl animate-pulse">🔴</span>
+                          <div>
+                            <p className="font-bold text-red-800">SOS Active</p>
+                            <p className="text-sm text-red-600">{activeSOS.notifiedCount} donors notified · Waiting for response...</p>
+                          </div>
+                          <div className="ml-auto">
+                            <FaSatelliteDish className="text-2xl text-red-400 animate-pulse" />
+                          </div>
+                        </div>
+                        <div className="bg-white/70 rounded-xl p-3 mb-3 text-xs text-gray-600 space-y-1">
+                          <p><span className="font-semibold">Blood:</span> {activeSOS.bloodGroup} · {activeSOS.units} unit(s)</p>
+                          <p><span className="font-semibold">Hospital:</span> {activeSOS.hospital}</p>
+                          <p><span className="font-semibold">Sent:</span> {activeSOS.sentAt ? new Date(activeSOS.sentAt).toLocaleTimeString() : 'just now'}</p>
+                        </div>
+                        <button onClick={handleCancelSOS} className="w-full py-2 text-sm text-gray-500 hover:text-red-600 transition border border-gray-200 rounded-xl">
+                          Cancel SOS
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {/* SOS Button — shown when no active SOS */}
+                {!activeSOS && (
+                  <button
+                    onClick={() => setSosModalOpen(true)}
+                    disabled={sosCooldownUntil && new Date() < sosCooldownUntil}
+                    className="w-full relative overflow-hidden py-5 rounded-2xl bg-gradient-to-r from-red-600 to-red-700 text-white font-bold text-xl shadow-xl hover:from-red-700 hover:to-red-800 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    {/* Pulse rings */}
+                    <span className="absolute inset-0 rounded-2xl animate-ping bg-red-500 opacity-20 pointer-events-none" />
+                    <span className="relative flex items-center justify-center gap-3">
+                      <FaExclamationTriangle className="text-2xl animate-pulse" />
+                      🚨 EMERGENCY SOS
+                    </span>
+                    {sosCooldownUntil && new Date() < sosCooldownUntil && (
+                      <p className="text-xs font-normal mt-1 opacity-75">
+                        Cooldown active — tap again soon
+                      </p>
+                    )}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* ── DONOR ACCEPTED INFO (Donor side — Call/WhatsApp buttons) ── */}
+            {isDonor && donorAcceptedInfo && (
+              <div className="bg-green-50 border-2 border-green-400 rounded-2xl p-5 shadow-lg">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <span className="text-3xl">✅</span>
+                    <div>
+                      <p className="text-lg font-bold text-green-800">You accepted an emergency!</p>
+                      <p className="text-sm text-green-600">Patient: {donorAcceptedInfo.patientName}</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setDonorAcceptedInfo(null)} className="text-gray-400 hover:text-red-500">
+                    <FaTimesCircle />
+                  </button>
+                </div>
+                <div className="bg-white rounded-xl p-4 mb-4 text-sm text-gray-700 space-y-1">
+                  <p><span className="font-semibold">Blood:</span> {donorAcceptedInfo.bloodGroup} · {donorAcceptedInfo.units} unit(s)</p>
+                  <p><span className="font-semibold">Hospital:</span> {donorAcceptedInfo.hospital}</p>
+                  <p><span className="font-semibold">Patient:</span> {donorAcceptedInfo.patientName}</p>
+                </div>
+                <div className="flex gap-3">
+                  <a
+                    href={`tel:${donorAcceptedInfo.patientPhone}`}
+                    className="flex-1 flex items-center justify-center gap-2 py-3 bg-green-600 text-white rounded-xl font-semibold hover:bg-green-700 transition text-sm"
+                  >
+                    <FaPhone /> Call Patient
+                  </a>
+                  <a
+                    href={`https://wa.me/${(donorAcceptedInfo.patientPhone || '').replace(/[^0-9]/g, '')}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex-1 flex items-center justify-center gap-2 py-3 bg-[#25D366] text-white rounded-xl font-semibold hover:opacity-90 transition text-sm"
+                  >
+                    <FaWhatsapp /> WhatsApp
+                  </a>
+                </div>
+              </div>
+            )}
+
             {/* Eligibility overview for donors */}
             {isDonor && (
               <DonorEligibility
@@ -677,6 +1149,106 @@ function Dashboard() {
                 onDonationRecorded={(freshDonations) => setDonations(freshDonations)}
               />
             )}
+          </div>
+        )}
+
+        {/* ── SOS Confirmation Modal ───────────────────────────────────── */}
+        {sosModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden">
+              {/* Header */}
+              <div className="bg-gradient-to-r from-red-600 to-red-700 px-6 py-5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className="text-3xl animate-pulse">🚨</span>
+                    <div>
+                      <h3 className="text-white font-bold text-xl">Send Emergency Request?</h3>
+                      <p className="text-red-200 text-sm">This will alert all matching donors instantly</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setSosModalOpen(false)} className="text-white/70 hover:text-white">
+                    <FaTimes className="text-xl" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Body */}
+              <div className="px-6 py-5 space-y-4">
+                {/* Auto-filled info */}
+                <div className="bg-red-50 rounded-2xl p-4 space-y-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-500">Blood Group</span>
+                    <span className="font-bold text-red-700 text-base">{user?.bloodGroup || 'Not set'}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-gray-500">Contact Phone</span>
+                    <span className="font-semibold text-gray-800">{user?.phone || 'Not set'}</span>
+                  </div>
+                  {user?.location && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-gray-500">Location</span>
+                      <span className="font-semibold text-gray-800">{user.location}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Hospital input */}
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-1">Hospital Name <span className="text-red-500">*</span></label>
+                  <input
+                    type="text"
+                    value={sosHospital}
+                    onChange={e => setSosHospital(e.target.value)}
+                    placeholder="e.g. Teaching Hospital, Kathmandu"
+                    className="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-red-400"
+                    autoFocus
+                  />
+                </div>
+
+                {/* Units quick-select */}
+                <div>
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">Units Needed</label>
+                  <div className="flex gap-3">
+                    {[1, 2, 3].map(u => (
+                      <button
+                        key={u}
+                        onClick={() => setSosUnits(u)}
+                        className={`flex-1 py-3 rounded-xl font-bold text-base transition-all ${
+                          sosUnits === u
+                            ? 'bg-red-600 text-white shadow-md'
+                            : 'bg-gray-100 text-gray-600 hover:bg-red-50'
+                        }`}
+                      >
+                        {u} unit{u > 1 ? 's' : ''}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Hotline info */}
+                <div className="flex items-center gap-2 text-xs text-gray-500 bg-gray-50 rounded-xl px-4 py-3">
+                  <FaPhone className="text-red-400" />
+                  <span>WhatsApp will open to hotline: <strong>{EMERGENCY_HOTLINE}</strong> after sending</span>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="px-6 pb-6 flex gap-3">
+                <button
+                  onClick={() => setSosModalOpen(false)}
+                  className="flex-1 py-3 border border-gray-200 rounded-xl text-gray-600 hover:bg-gray-50 font-semibold transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSOSSubmit}
+                  disabled={sosLoading || !user?.bloodGroup || !user?.phone}
+                  className="flex-2 flex-1 py-3 bg-gradient-to-r from-red-600 to-red-700 text-white rounded-xl font-bold shadow-md hover:from-red-700 hover:to-red-800 transition disabled:opacity-60 flex items-center justify-center gap-2"
+                >
+                  {sosLoading ? <FaSpinner className="animate-spin" /> : '🚨'} SEND SOS
+                </button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -1303,26 +1875,32 @@ function Dashboard() {
                                   <p className="text-sm font-bold text-blue-700">A donor has accepted your request!</p>
                                 </div>
                                 {req.acceptedBy && (
-                                  <div className="ml-6 space-y-1">
+                                  <div className="ml-6 space-y-2">
                                     <p className="text-sm font-semibold text-gray-800">
-                                      {req.acceptedBy.username}
+                                      Donor: {req.acceptedBy.username}
                                     </p>
-                                    {req.acceptedBy.phone && (
-                                      <a
-                                        href={`tel:${req.acceptedBy.phone}`}
-                                        className="inline-flex items-center gap-2 text-sm font-bold text-blue-700 bg-blue-100 hover:bg-blue-200 px-3 py-1.5 rounded-xl transition-all"
-                                      >
-                                        <FaPhone className="text-xs" />
-                                        Call {req.acceptedBy.phone}
-                                      </a>
+                                    {req.acceptedBy.phone ? (
+                                      <div className="flex gap-2">
+                                        <a
+                                          href={`tel:${req.acceptedBy.phone}`}
+                                          className="flex-1 flex items-center justify-center gap-2 py-2 text-sm font-bold text-white bg-green-600 hover:bg-green-700 rounded-xl transition-all"
+                                        >
+                                          <FaPhone className="text-xs" /> Call Donor
+                                        </a>
+                                        <a
+                                          href={`https://wa.me/${req.acceptedBy.phone.replace(/[^0-9]/g, '')}`}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="flex-1 flex items-center justify-center gap-2 py-2 text-sm font-bold text-white bg-[#25D366] hover:opacity-90 rounded-xl transition-all"
+                                        >
+                                          <FaWhatsapp className="text-xs" /> WhatsApp
+                                        </a>
+                                      </div>
+                                    ) : (
+                                      <p className="text-xs text-gray-400 italic">No contact info — check notifications for details.</p>
                                     )}
                                     {req.acceptedBy.email && (
-                                      <p className="text-xs text-gray-500 mt-1">
-                                        {req.acceptedBy.email}
-                                      </p>
-                                    )}
-                                    {!req.acceptedBy.phone && !req.acceptedBy.email && (
-                                      <p className="text-xs text-gray-400 italic">No contact info available — check notifications for details.</p>
+                                      <p className="text-xs text-gray-500">{req.acceptedBy.email}</p>
                                     )}
                                   </div>
                                 )}
@@ -1530,32 +2108,49 @@ function Dashboard() {
                           {isDonor && notif.data.requestId && (
                             <div className="mt-3" onClick={e => e.stopPropagation()}>
                               {!isAvailable ? (
-                                <div className="flex items-center gap-2 bg-orange-50 border border-orange-200 rounded-xl px-3 py-2">
-                                  <FaLock className="text-orange-500 text-xs flex-shrink-0" />
-                                  <p className="text-xs font-semibold text-orange-700">
-                                    You're in a 56-day cooldown — not eligible to donate yet.
-                                  </p>
+                                <div className="space-y-2">
+                                  <div className="flex items-center gap-2 bg-orange-50 border border-orange-200 rounded-xl px-3 py-2">
+                                    <FaLock className="text-orange-500 text-xs flex-shrink-0" />
+                                    <p className="text-xs font-semibold text-orange-700">
+                                      You're in a 56-day cooldown — not eligible to donate yet.
+                                    </p>
+                                  </div>
+                                  {/* Still show contact for emergencies even in cooldown */}
+                                  {notif.data.urgency === 'emergency' && notif.data.contactPhone && (
+                                    <a
+                                      href={`tel:${notif.data.contactPhone}`}
+                                      className="w-full flex items-center justify-center gap-2 py-2 bg-red-50 border border-red-200 text-red-700 rounded-xl text-xs font-semibold hover:bg-red-100 transition"
+                                    >
+                                      <FaPhone className="text-xs" /> Call Patient: {notif.data.contactPhone}
+                                    </a>
+                                  )}
                                 </div>
                               ) : (
                                 <div className="flex gap-2">
                                   <button
                                     onClick={() => handleAcceptRequest(notif.data.requestId)}
                                     disabled={loadingAccept === notif.data.requestId}
-                                    className={`flex-1 py-2 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all ${
-                                      loadingAccept === notif.data.requestId
-                                        ? 'bg-green-400 cursor-not-allowed text-white opacity-70'
-                                        : 'bg-green-600 hover:bg-green-700 text-white shadow-sm'
+                                    className={`flex-1 py-2.5 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all ${
+                                      notif.data.urgency === 'emergency'
+                                        ? loadingAccept === notif.data.requestId
+                                          ? 'bg-red-400 cursor-not-allowed text-white opacity-70'
+                                          : 'bg-red-600 hover:bg-red-700 text-white shadow-md animate-pulse'
+                                        : loadingAccept === notif.data.requestId
+                                          ? 'bg-green-400 cursor-not-allowed text-white opacity-70'
+                                          : 'bg-green-600 hover:bg-green-700 text-white shadow-sm'
                                     }`}
                                   >
                                     {loadingAccept === notif.data.requestId
                                       ? <><FaSpinner className="animate-spin text-xs" /> Accepting...</>
-                                      : <><FaCheckCircle className="text-xs" /> Accept & Donate</>}
+                                      : notif.data.urgency === 'emergency'
+                                        ? <><FaTint className="text-xs" /> Accept Now 🩸</>
+                                        : <><FaCheckCircle className="text-xs" /> Accept & Donate</>}
                                   </button>
                                   <button
                                     onClick={() => { setActivePanel('requests'); }}
                                     className="px-3 py-2 rounded-xl text-xs font-semibold text-gray-500 border border-gray-200 hover:bg-gray-50 transition-all"
                                   >
-                                    View All
+                                    View
                                   </button>
                                 </div>
                               )}
@@ -1618,34 +2213,88 @@ function Dashboard() {
 
                         {/* ── Request Accepted card ───────────────────────── */}
                         {isAccepted && notif.data && (
-                          <div className="mt-3 bg-white rounded-xl border border-green-100 p-3.5 flex items-center gap-3">
-                            <div className="flex-shrink-0 w-10 h-10 rounded-xl bg-green-500 flex items-center justify-center shadow-sm">
-                              <FaCheckCircle className="text-white text-base" />
-                            </div>
-                            <div className="flex-1">
-                              <p className="text-xs font-semibold text-green-700">A donor has accepted your request!</p>
-                              {notif.data.donorName && (
-                                <p className="text-xs text-gray-500 mt-0.5">Donor: {notif.data.donorName}</p>
-                              )}
-                              {notif.data.contactPhone && (
-                                <a
-                                  href={`tel:${notif.data.contactPhone}`}
-                                  onClick={(e) => e.stopPropagation()}
-                                  className="mt-1.5 inline-flex items-center gap-1.5 text-xs font-semibold text-green-700 hover:underline"
-                                >
-                                  <FaPhone className="text-xs" />
-                                  {notif.data.contactPhone}
-                                </a>
-                              )}
-                            </div>
-                            {notif.data.requestId && (
-                              <Link
-                                to={`/blood-request/${notif.data.requestId}`}
-                                onClick={(e) => e.stopPropagation()}
-                                className="text-xs font-semibold text-green-600 hover:text-green-800 bg-green-50 hover:bg-green-100 px-3 py-1.5 rounded-lg transition-all whitespace-nowrap"
+                          <div className="mt-3" onClick={e => e.stopPropagation()}>
+                            {/* Collapsed row */}
+                            <div className="bg-white rounded-xl border border-green-200 p-3.5 flex items-center gap-3">
+                              <div className="flex-shrink-0 w-9 h-9 rounded-xl bg-green-500 flex items-center justify-center shadow-sm">
+                                <FaCheckCircle className="text-white text-sm" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-semibold text-green-700">A donor has accepted your request!</p>
+                                {notif.data.donorName && (
+                                  <p className="text-xs text-gray-500 mt-0.5 truncate">
+                                    Donor: <span className="font-medium text-gray-700">{notif.data.donorName}</span>
+                                  </p>
+                                )}
+                              </div>
+                              <button
+                                onClick={() => setExpandedNotifId(
+                                  expandedNotifId === notif._id ? null : notif._id
+                                )}
+                                className="text-xs font-semibold text-green-600 hover:text-green-800 bg-green-50 hover:bg-green-100 px-3 py-1.5 rounded-lg transition-all whitespace-nowrap flex items-center gap-1"
                               >
-                                View →
-                              </Link>
+                                {expandedNotifId === notif._id ? 'Hide ↑' : 'View →'}
+                              </button>
+                            </div>
+
+                            {/* Expanded detail card */}
+                            {expandedNotifId === notif._id && (
+                              <div className="mt-2 bg-green-50 border border-green-200 rounded-xl p-4 space-y-3">
+
+                                {/* Donor info rows */}
+                                <div className="space-y-2">
+                                  {notif.data.donorName && (
+                                    <div className="flex items-center gap-2 text-sm">
+                                      <span className="text-lg">👤</span>
+                                      <div>
+                                        <p className="text-xs text-gray-500">Donor</p>
+                                        <p className="font-semibold text-gray-800">{notif.data.donorName}</p>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {notif.data.contactPhone && (
+                                    <div className="flex items-center gap-2 text-sm">
+                                      <span className="text-lg">📞</span>
+                                      <div>
+                                        <p className="text-xs text-gray-500">Phone</p>
+                                        <p className="font-semibold text-gray-800">{notif.data.contactPhone}</p>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {notif.data.requestId && (
+                                    <div className="flex items-center gap-2 text-sm">
+                                      <span className="text-lg">🩸</span>
+                                      <div>
+                                        <p className="text-xs text-gray-500">Status</p>
+                                        <p className="font-semibold text-green-700">Donor on the way ✅</p>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Divider */}
+                                <div className="border-t border-green-200" />
+
+                                {/* Call + WhatsApp buttons */}
+                                {notif.data.contactPhone && (
+                                  <div className="flex gap-2">
+                                    <a
+                                      href={`tel:${notif.data.contactPhone}`}
+                                      className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-green-600 text-white rounded-xl text-sm font-bold hover:bg-green-700 transition"
+                                    >
+                                      <FaPhone className="text-xs" /> Call Donor
+                                    </a>
+                                    <a
+                                      href={`https://wa.me/${notif.data.contactPhone.replace(/[^0-9]/g, '')}`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-[#25D366] text-white rounded-xl text-sm font-bold hover:opacity-90 transition"
+                                    >
+                                      <FaWhatsapp className="text-xs" /> WhatsApp
+                                    </a>
+                                  </div>
+                                )}
+                              </div>
                             )}
                           </div>
                         )}
@@ -1673,6 +2322,104 @@ function Dashboard() {
             )}
           </div>
         )}
+        {/* ── EVENTS PANEL ───────────────────────────────────────────────── */}
+        {activePanel === 'events' && (
+          <div className="space-y-6 max-w-3xl">
+            <div>
+              <h3 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
+                <span className="w-10 h-10 rounded-xl bg-purple-100 flex items-center justify-center">
+                  <FaCalendarAlt className="text-purple-600 text-lg" />
+                </span>
+                Upcoming Blood Donation Drives
+              </h3>
+              <p className="text-sm text-gray-500 mt-1 ml-[52px]">Events hosted by hospitals near you — RSVP to attend</p>
+            </div>
+
+            {upcomingEvents.length === 0 ? (
+              <div className="bg-white rounded-3xl shadow-md border border-purple-100 p-14 text-center">
+                <FaCalendarAlt className="text-7xl text-purple-100 mx-auto mb-5" />
+                <p className="text-xl font-bold text-gray-700 mb-2">No upcoming events</p>
+                <p className="text-gray-400 text-sm">Hospitals will post blood donation drives here. You'll be notified when one is created!</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {upcomingEvents.map(ev => {
+                  const myRsvp = ev.rsvps?.find(r => r.user === user?._id || r.user?._id === user?._id);
+                  const isAttending = myRsvp?.status === 'attending';
+                  const attendingCount = ev.rsvps?.filter(r => r.status === 'attending').length || 0;
+                  const statusColor = {
+                    upcoming: 'bg-blue-100 text-blue-700',
+                    ongoing: 'bg-green-100 text-green-700',
+                    completed: 'bg-gray-100 text-gray-500',
+                    cancelled: 'bg-red-100 text-red-600',
+                  }[ev.status] || 'bg-blue-100 text-blue-700';
+
+                  return (
+                    <div key={ev._id} className="bg-white rounded-2xl shadow-md border border-purple-100 p-6 flex flex-col md:flex-row gap-5">
+                      {/* Date badge */}
+                      <div className="flex-shrink-0 flex flex-col items-center justify-center w-20 h-20 bg-purple-50 rounded-2xl border border-purple-100">
+                        <span className="text-xs font-bold text-purple-400 uppercase">{new Date(ev.date).toLocaleString('en', { month: 'short' })}</span>
+                        <span className="text-3xl font-extrabold text-purple-600">{new Date(ev.date).getDate()}</span>
+                        <span className="text-xs text-gray-500">{new Date(ev.date).getFullYear()}</span>
+                      </div>
+
+                      {/* Details */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-start justify-between gap-3 flex-wrap">
+                          <div>
+                            <h4 className="text-lg font-bold text-gray-900">{ev.title}</h4>
+                            <p className="text-sm text-purple-600 font-medium">{ev.hospitalName}</p>
+                          </div>
+                          <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase ${statusColor}`}>{ev.status}</span>
+                        </div>
+                        {ev.description && <p className="text-sm text-gray-500 mt-1 line-clamp-2">{ev.description}</p>}
+                        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-gray-600">
+                          <span className="flex items-center gap-1"><FaClock className="text-purple-400" />{ev.time}</span>
+                          <span className="flex items-center gap-1"><FaMapMarkerAlt className="text-purple-400" />{ev.location}</span>
+                          <span className="flex items-center gap-1"><FaUsers className="text-purple-400" />{attendingCount} attending</span>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {ev.bloodGroupsNeeded?.map(g => (
+                            <span key={g} className="px-2 py-0.5 bg-red-50 border border-red-200 text-red-700 rounded-lg text-xs font-bold">{g}</span>
+                          ))}
+                        </div>
+
+                        {/* RSVP buttons */}
+                        {ev.status !== 'cancelled' && ev.status !== 'completed' && (
+                          <div className="mt-4 flex gap-2">
+                            <button
+                              onClick={() => handleRSVP(ev._id, 'attending')}
+                              disabled={rsvpLoading === ev._id}
+                              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition ${
+                                isAttending
+                                  ? 'bg-green-600 text-white shadow'
+                                  : 'bg-white border border-green-300 text-green-700 hover:bg-green-50'
+                              }`}
+                            >
+                              {rsvpLoading === ev._id ? <FaSpinner className="animate-spin" /> : <FaCalendarCheck />}
+                              {isAttending ? '✓ Attending' : "I'll Attend"}
+                            </button>
+                            {isAttending && (
+                              <button
+                                onClick={() => handleRSVP(ev._id, 'declined')}
+                                disabled={rsvpLoading === ev._id}
+                                className="px-4 py-2 rounded-xl text-sm font-medium border border-gray-200 text-gray-500 hover:bg-gray-50 transition"
+                              >
+                                Cancel RSVP
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+        {/* ── END EVENTS PANEL ────────────────────────────────────────────── */}
+
         {/* Stories Panel */}
         {activePanel === 'stories' && (
           <div className="max-w-2xl space-y-6">

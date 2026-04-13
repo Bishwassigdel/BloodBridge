@@ -11,6 +11,12 @@ import authRoutes from './routes/auth.js';
 import bloodRoutes from './routes/blood.js';
 import notificationRoutes from './routes/notification.js';
 import storyRoutes from './routes/story.js';
+import eventRoutes from './routes/event.js';
+
+// SSE
+import { addSSEClient, removeSSEClient } from './sse.js';
+import jwt from 'jsonwebtoken';
+import User from './models/user.js';
 
 // ESM __dirname equivalent
 const __filename = fileURLToPath(import.meta.url);
@@ -59,11 +65,54 @@ const connectDB = async () => {
 
 connectDB();
 
+// ── SSE Endpoint ─────────────────────────────────────────────────────────
+// Real-time push: donors get instant SOS alerts, receivers get donor-found updates
+// Auth via ?token= query param (EventSource doesn't support headers)
+app.get('/api/sse', async (req, res) => {
+  try {
+    const token = req.query.token;
+    if (!token) return res.status(401).json({ message: 'No token' });
+
+    // Verify JWT
+    const decoded = jwt.verify(token.replace(/^["']+|["']+$/g, '').trim(), process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id).select('_id role bloodGroup username').lean();
+    if (!user) return res.status(401).json({ message: 'User not found' });
+
+    // SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+    res.flushHeaders();
+
+    // Register client
+    addSSEClient(user._id, res, user.bloodGroup, user.role);
+
+    // Send connected confirmation
+    res.write(`event: connected\ndata: ${JSON.stringify({ userId: user._id, role: user.role })}\n\n`);
+
+    // Heartbeat every 25 seconds to keep connection alive
+    const heartbeat = setInterval(() => {
+      try { res.write(': heartbeat\n\n'); } catch (_) {}
+    }, 25000);
+
+    // Cleanup on disconnect
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      removeSSEClient(user._id);
+    });
+  } catch (err) {
+    console.error('[SSE] Auth error:', err.message);
+    res.status(401).end();
+  }
+});
+
 // ── Routes ──────────────────────────────────────────────────────────────
 app.use('/api/auth', authRoutes);
 app.use('/api/blood', bloodRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/stories', storyRoutes);
+app.use('/api/events', eventRoutes);
 
 // ── Health Check / Root ─────────────────────────────────────────────────
 app.get('/', (req, res) => {

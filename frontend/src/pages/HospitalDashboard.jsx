@@ -30,6 +30,14 @@ import {
   FaEdit,
   FaBan,
   FaHandHoldingHeart,
+  FaCalendarPlus,
+  FaCalendarAlt,
+  FaTrash,
+  FaUsers as FaUserGroup,
+  FaClock,
+  FaPlusCircle,
+  FaTimesCircle,
+  FaEnvelope,
 } from 'react-icons/fa';
 import { useAuth } from '../context/AuthContext';
 
@@ -95,6 +103,24 @@ function HospitalDashboard() {
   const [alertResult, setAlertResult] = useState({ msg: '', type: '' }); // type: 'success' | 'error'
   const [alertIncludeCooldown, setAlertIncludeCooldown] = useState(false);
   const [showAlertForm, setShowAlertForm] = useState(false);
+
+  // ── Events state ─────────────────────────────────────────────────────────
+  const BLOOD_GROUPS_OPTIONS = ['All', 'A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
+  const [events, setEvents] = useState([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [showEventForm, setShowEventForm] = useState(false);
+  const [eventForm, setEventForm] = useState({
+    title: '', description: '', date: '', time: '', location: '',
+    contactPhone: '', bloodGroupsNeeded: ['All'], targetDonors: '',
+  });
+  const [eventFormLoading, setEventFormLoading] = useState(false);
+  const [eventFormResult, setEventFormResult] = useState({ msg: '', type: '' });
+  const [editingEvent, setEditingEvent] = useState(null);
+  const [cancellingEventId, setCancellingEventId] = useState(null);
+  const [completingEvent, setCompletingEvent] = useState(null); // event being marked complete
+  const [completeForm, setCompleteForm] = useState({ unitsCollected: '', totalDonors: '', image: '', story: '', quote: '', quoteName: '' });
+  const [completeFormLoading, setCompleteFormLoading] = useState(false);
+  // ─────────────────────────────────────────────────────────────────────────
 
   const token = localStorage.getItem('token');
 
@@ -180,6 +206,110 @@ function HospitalDashboard() {
     }
   };
 
+  // ── Events fetch & actions ───────────────────────────────────────────────
+  const fetchEvents = async () => {
+    if (!isAuthenticated) return;
+    setEventsLoading(true);
+    try {
+      const res = await axios.get('/api/events/mine');
+      if (res.data?.success) setEvents(res.data.events || []);
+    } catch (err) {
+      console.error('Events fetch failed', err);
+    } finally {
+      setEventsLoading(false);
+    }
+  };
+
+  const handleEventFormChange = (field, value) => {
+    setEventForm(prev => ({ ...prev, [field]: value }));
+  };
+
+  const toggleBloodGroup = (group) => {
+    setEventForm(prev => {
+      if (group === 'All') return { ...prev, bloodGroupsNeeded: ['All'] };
+      const without = prev.bloodGroupsNeeded.filter(g => g !== 'All' && g !== group);
+      const hasGroup = prev.bloodGroupsNeeded.includes(group);
+      return { ...prev, bloodGroupsNeeded: hasGroup ? without : [...without, group] };
+    });
+  };
+
+  const handleCreateEvent = async (e) => {
+    e.preventDefault();
+    setEventFormLoading(true);
+    setEventFormResult({ msg: '', type: '' });
+    try {
+      const payload = { ...eventForm, targetDonors: Number(eventForm.targetDonors) || 0 };
+      if (editingEvent) {
+        await axios.patch(`/api/events/${editingEvent._id}`, payload);
+        setEventFormResult({ msg: 'Event updated successfully!', type: 'success' });
+      } else {
+        const res = await axios.post('/api/events', payload);
+        setEventFormResult({ msg: res.data.message || 'Event created!', type: 'success' });
+      }
+      setEventForm({ title: '', description: '', date: '', time: '', location: '', contactPhone: '', bloodGroupsNeeded: ['All'], targetDonors: '' });
+      setEditingEvent(null);
+      setShowEventForm(false);
+      fetchEvents();
+    } catch (err) {
+      setEventFormResult({ msg: err.response?.data?.message || 'Failed to save event.', type: 'error' });
+    } finally {
+      setEventFormLoading(false);
+    }
+  };
+
+  const handleCancelEvent = async (eventId) => {
+    if (!window.confirm('Cancel this event? Donors and receivers will not be notified of the cancellation.')) return;
+    setCancellingEventId(eventId);
+    try {
+      await axios.delete(`/api/events/${eventId}`);
+      setEvents(prev => prev.map(ev => ev._id === eventId ? { ...ev, status: 'cancelled' } : ev));
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to cancel event.');
+    } finally {
+      setCancellingEventId(null);
+    }
+  };
+
+  const handleEditEvent = (ev) => {
+    setEditingEvent(ev);
+    setEventForm({
+      title: ev.title,
+      description: ev.description || '',
+      date: ev.date ? ev.date.slice(0, 10) : '',
+      time: ev.time,
+      location: ev.location,
+      contactPhone: ev.contactPhone || '',
+      bloodGroupsNeeded: ev.bloodGroupsNeeded || ['All'],
+      targetDonors: ev.targetDonors || '',
+    });
+    setShowEventForm(true);
+    setEventFormResult({ msg: '', type: '' });
+  };
+  const handleMarkComplete = async (e) => {
+    e.preventDefault();
+    if (!completingEvent) return;
+    setCompleteFormLoading(true);
+    try {
+      await axios.patch(`/api/events/${completingEvent._id}`, {
+        status: 'completed',
+        unitsCollected: Number(completeForm.unitsCollected) || 0,
+        totalDonors: Number(completeForm.totalDonors) || 0,
+        image: completeForm.image,
+        story: completeForm.story,
+        quote: completeForm.quote,
+        quoteName: completeForm.quoteName,
+      });
+      setEvents(prev => prev.map(ev => ev._id === completingEvent._id ? { ...ev, status: 'completed', ...completeForm } : ev));
+      setCompletingEvent(null);
+      setCompleteForm({ unitsCollected: '', totalDonors: '', image: '', story: '', quote: '', quoteName: '' });
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to mark event as completed.');
+    } finally {
+      setCompleteFormLoading(false);
+    }
+  };
+  // ─────────────────────────────────────────────────────────────────────────
+
   const fetchDonors = async (filters = {}) => {
     if (!isAuthenticated) return;
     setDonorsLoading(true);
@@ -253,6 +383,9 @@ function HospitalDashboard() {
     }
     if (activePanel === 'requests') {
       fetchAllRequests(requestFilter);
+    }
+    if (activePanel === 'events') {
+      fetchEvents();
     }
   }, [activePanel, token]);
 
@@ -532,11 +665,12 @@ function HospitalDashboard() {
 
         <nav className="p-6 space-y-2">
           {[
-            { key: 'donors',        icon: FaUsers,       label: 'Donor Network'  },
-            { key: 'requests',      icon: FaClipboardList, label: 'Blood Request' },
-            { key: 'inventory',     icon: FaTint,        label: 'Blood Inventory' },
-            { key: 'history',       icon: FaHistory,     label: 'Activity Log'   },
-            { key: 'notifications', icon: FaBell,        label: 'Notification'   },
+            { key: 'donors',        icon: FaUsers,         label: 'Donor Network'   },
+            { key: 'requests',      icon: FaClipboardList, label: 'Blood Request'   },
+            { key: 'inventory',     icon: FaTint,          label: 'Blood Inventory' },
+            { key: 'events',        icon: FaCalendarPlus,  label: 'Host Event'      },
+            { key: 'history',       icon: FaHistory,       label: 'Activity Log'    },
+            { key: 'notifications', icon: FaBell,          label: 'Notification'    },
           ].map((item) => (
             <button
               key={item.key}
@@ -566,7 +700,7 @@ function HospitalDashboard() {
             }}
             className="w-full flex items-center gap-4 px-6 py-4 rounded-2xl text-gray-700 hover:bg-blue-50 hover:text-blue-700 transition-all duration-300 font-medium"
           >
-            <FaCog className="text-2xl" />
+            <FaUser className="text-2xl" />
             <span className="text-lg">Edit Profile</span>
           </button>
 
@@ -902,6 +1036,349 @@ function HospitalDashboard() {
                 )}
               </div>
             )}
+
+            {/* ── EVENTS PANEL ───────────────────────────────────────────────────── */}
+            {activePanel === 'events' && (
+              <div className="space-y-8">
+                {/* Header */}
+                <div className="flex items-center justify-between flex-wrap gap-4">
+                  <div>
+                    <h3 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
+                      <span className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center">
+                        <FaCalendarPlus className="text-red-600 text-lg" />
+                      </span>
+                      Host Blood Donation Drive
+                    </h3>
+                    <p className="text-sm text-gray-500 mt-1 ml-[52px]">Create events — donors & receivers get notified instantly</p>
+                  </div>
+                  <button
+                    onClick={() => { setShowEventForm(v => !v); setEditingEvent(null); setEventForm({ title: '', description: '', date: '', time: '', location: '', contactPhone: '', bloodGroupsNeeded: ['All'], targetDonors: '' }); setEventFormResult({ msg: '', type: '' }); }}
+                    className="flex items-center gap-2 px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-bold rounded-xl transition shadow-sm"
+                  >
+                    <FaCalendarPlus />
+                    {showEventForm ? 'Close Form' : 'Create Event'}
+                  </button>
+                </div>
+
+                {/* Create / Edit Form */}
+                {showEventForm && (
+                  <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-8">
+                    <h4 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2">
+                      <FaCalendarAlt className="text-red-500" />
+                      {editingEvent ? 'Edit Event' : 'New Blood Donation Drive'}
+                    </h4>
+
+                    {eventFormResult.msg && (
+                      <div className={`mb-5 p-4 rounded-xl text-sm font-medium flex items-center gap-2 ${eventFormResult.type === 'success' ? 'bg-green-50 border border-green-200 text-green-700' : 'bg-red-50 border border-red-200 text-red-700'}`}>
+                        {eventFormResult.type === 'success' ? <FaCheckCircle /> : <FaTimesCircle />}
+                        {eventFormResult.msg}
+                      </div>
+                    )}
+
+                    <form onSubmit={handleCreateEvent} className="space-y-5">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                        <div className="md:col-span-2">
+                          <label className="block text-sm font-semibold text-gray-700 mb-1">Event Title <span className="text-red-500">*</span></label>
+                          <input
+                            type="text"
+                            value={eventForm.title}
+                            onChange={e => handleEventFormChange('title', e.target.value)}
+                            placeholder="e.g. World Blood Donor Day Drive 2025"
+                            required
+                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
+                          />
+                        </div>
+                        <div className="md:col-span-2">
+                          <label className="block text-sm font-semibold text-gray-700 mb-1">Description</label>
+                          <textarea
+                            value={eventForm.description}
+                            onChange={e => handleEventFormChange('description', e.target.value)}
+                            rows={3}
+                            placeholder="Tell donors what this event is about..."
+                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-300 resize-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-700 mb-1">Date <span className="text-red-500">*</span></label>
+                          <input
+                            type="date"
+                            value={eventForm.date}
+                            onChange={e => handleEventFormChange('date', e.target.value)}
+                            min={new Date().toISOString().slice(0,10)}
+                            required
+                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-700 mb-1">Time <span className="text-red-500">*</span></label>
+                          <input
+                            type="text"
+                            value={eventForm.time}
+                            onChange={e => handleEventFormChange('time', e.target.value)}
+                            placeholder="e.g. 9:00 AM – 4:00 PM"
+                            required
+                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-700 mb-1">Location <span className="text-red-500">*</span></label>
+                          <input
+                            type="text"
+                            value={eventForm.location}
+                            onChange={e => handleEventFormChange('location', e.target.value)}
+                            placeholder="e.g. Tribhuvan University Teaching Hospital, KTM"
+                            required
+                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-700 mb-1">Contact Phone</label>
+                          <input
+                            type="text"
+                            value={eventForm.contactPhone}
+                            onChange={e => handleEventFormChange('contactPhone', e.target.value)}
+                            placeholder="+977 98XXXXXXXX"
+                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-700 mb-1">Target Donors</label>
+                          <input
+                            type="number"
+                            min="0"
+                            value={eventForm.targetDonors}
+                            onChange={e => handleEventFormChange('targetDonors', e.target.value)}
+                            placeholder="e.g. 100"
+                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
+                          />
+                        </div>
+                        <div className="md:col-span-2">
+                          <label className="block text-sm font-semibold text-gray-700 mb-2">Blood Groups Needed</label>
+                          <div className="flex flex-wrap gap-2">
+                            {BLOOD_GROUPS_OPTIONS.map(group => (
+                              <button
+                                key={group}
+                                type="button"
+                                onClick={() => toggleBloodGroup(group)}
+                                className={`px-4 py-2 rounded-xl text-sm font-semibold border transition ${
+                                  eventForm.bloodGroupsNeeded.includes(group)
+                                    ? 'bg-red-600 text-white border-red-600 shadow'
+                                    : 'bg-white text-gray-600 border-gray-200 hover:border-red-300'
+                                }`}
+                              >
+                                {group}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-3 pt-2">
+                        <button
+                          type="submit"
+                          disabled={eventFormLoading}
+                          className="flex items-center gap-2 px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition disabled:opacity-60"
+                        >
+                          {eventFormLoading ? <FaSpinner className="animate-spin" /> : <FaCalendarPlus />}
+                          {editingEvent ? 'Update Event' : 'Create & Notify All'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setShowEventForm(false); setEditingEvent(null); setEventFormResult({ msg: '', type: '' }); }}
+                          className="px-6 py-3 border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 transition text-sm"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                )}
+
+                {/* Events List */}
+                {eventsLoading ? (
+                  <div className="flex justify-center py-12">
+                    <FaSpinner className="text-5xl text-red-600 animate-spin" />
+                  </div>
+                ) : events.length === 0 ? (
+                  <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-16 text-center">
+                    <FaCalendarAlt className="text-8xl text-red-100 mx-auto mb-6" />
+                    <p className="text-2xl font-bold text-gray-700 mb-2">No events yet</p>
+                    <p className="text-gray-500">Create your first blood donation drive — all donors and receivers will be notified.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-5">
+                    {events.map(ev => {
+                      const isPast = new Date(ev.date) < new Date() && ev.status !== 'cancelled';
+                      const statusColor = {
+                        upcoming: 'bg-blue-100 text-blue-700',
+                        ongoing: 'bg-green-100 text-green-700',
+                        completed: 'bg-gray-100 text-gray-600',
+                        cancelled: 'bg-red-100 text-red-600',
+                      }[ev.status] || 'bg-gray-100 text-gray-600';
+
+                      return (
+                        <div key={ev._id} className={`bg-white rounded-2xl shadow-md border p-6 flex flex-col md:flex-row gap-5 ${ev.status === 'cancelled' ? 'opacity-60 border-gray-200' : 'border-red-100'}`}>
+                          {/* Date badge */}
+                          <div className="flex-shrink-0 flex flex-col items-center justify-center w-20 h-20 bg-red-50 rounded-2xl border border-red-100">
+                            <span className="text-xs font-bold text-red-400 uppercase">{new Date(ev.date).toLocaleString('en', { month: 'short' })}</span>
+                            <span className="text-3xl font-extrabold text-red-600">{new Date(ev.date).getDate()}</span>
+                            <span className="text-xs text-gray-500">{new Date(ev.date).getFullYear()}</span>
+                          </div>
+
+                          {/* Info */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-start justify-between gap-3 flex-wrap">
+                              <h4 className="text-lg font-bold text-gray-900 truncate">{ev.title}</h4>
+                              <span className={`px-3 py-1 rounded-full text-xs font-bold uppercase ${statusColor}`}>{ev.status}</span>
+                            </div>
+                            {ev.description && <p className="text-sm text-gray-500 mt-1 line-clamp-2">{ev.description}</p>}
+                            <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-gray-600">
+                              <span className="flex items-center gap-1"><FaClock className="text-red-400" />{ev.time}</span>
+                              <span className="flex items-center gap-1"><FaMapMarkerAlt className="text-red-400" />{ev.location}</span>
+                              {ev.contactPhone && <span className="flex items-center gap-1"><FaPhone className="text-red-400" />{ev.contactPhone}</span>}
+                            </div>
+                            <div className="mt-3 flex flex-wrap gap-2 items-center">
+                              {ev.bloodGroupsNeeded?.map(g => (
+                                <span key={g} className="px-2 py-0.5 bg-red-50 border border-red-200 text-red-700 rounded-lg text-xs font-bold">{g}</span>
+                              ))}
+                              <span className="text-xs text-gray-400 ml-2">
+                                {ev.rsvps?.filter(r => r.status === 'attending').length || 0} attending
+                                {ev.targetDonors > 0 && ` / ${ev.targetDonors} target`}
+                              </span>
+                              {ev.notifiedCount > 0 && (
+                                <span className="text-xs text-green-600 flex items-center gap-1 ml-1"><FaEnvelope />{ev.notifiedCount} emailed</span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Actions */}
+                          {ev.status !== 'cancelled' && ev.status !== 'completed' && (
+                            <div className="flex flex-col gap-2 flex-shrink-0">
+                              <button
+                                onClick={() => handleEditEvent(ev)}
+                                className="flex items-center gap-2 px-4 py-2 border border-gray-200 text-gray-700 rounded-xl hover:bg-gray-50 transition text-sm font-medium"
+                              >
+                                <FaEdit className="text-blue-500" /> Edit
+                              </button>
+                              <button
+                                onClick={() => { setCompletingEvent(ev); setCompleteForm({ unitsCollected: ev.targetDonors || '', totalDonors: '', image: '', story: '', quote: '', quoteName: '' }); }}
+                                className="flex items-center gap-2 px-4 py-2 border border-green-200 text-green-700 rounded-xl hover:bg-green-50 transition text-sm font-medium"
+                              >
+                                <FaCheckCircle className="text-green-500" /> Mark Complete
+                              </button>
+                              <button
+                                onClick={() => handleCancelEvent(ev._id)}
+                                disabled={cancellingEventId === ev._id}
+                                className="flex items-center gap-2 px-4 py-2 border border-red-200 text-red-600 rounded-xl hover:bg-red-50 transition text-sm font-medium disabled:opacity-60"
+                              >
+                                {cancellingEventId === ev._id ? <FaSpinner className="animate-spin" /> : <FaBan />} Cancel
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+            {/* ── MARK AS COMPLETED MODAL ─────────────────────────────────────────── */}
+            {completingEvent && (
+              <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+                  <div className="p-6 border-b border-gray-100">
+                    <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                      <FaCheckCircle className="text-green-500" /> Mark Event as Completed
+                    </h3>
+                    <p className="text-sm text-gray-500 mt-1">
+                      <span className="font-semibold text-gray-700">{completingEvent.title}</span> — fill in the results to showcase this event on the home page.
+                    </p>
+                  </div>
+                  <form onSubmit={handleMarkComplete} className="p-6 space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-1">Units Collected</label>
+                        <input
+                          type="number" min="0"
+                          value={completeForm.unitsCollected}
+                          onChange={e => setCompleteForm(f => ({ ...f, unitsCollected: e.target.value }))}
+                          placeholder="e.g. 250"
+                          className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-300"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-1">Total Donors</label>
+                        <input
+                          type="number" min="0"
+                          value={completeForm.totalDonors}
+                          onChange={e => setCompleteForm(f => ({ ...f, totalDonors: e.target.value }))}
+                          placeholder="e.g. 100"
+                          className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-300"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">Cover Image URL <span className="text-gray-400 font-normal">(optional)</span></label>
+                      <input
+                        type="url"
+                        value={completeForm.image}
+                        onChange={e => setCompleteForm(f => ({ ...f, image: e.target.value }))}
+                        placeholder="https://..."
+                        className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-300"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">Event Story <span className="text-gray-400 font-normal">(optional)</span></label>
+                      <textarea
+                        value={completeForm.story}
+                        onChange={e => setCompleteForm(f => ({ ...f, story: e.target.value }))}
+                        rows={3}
+                        placeholder="Describe what happened at this event..."
+                        className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-300 resize-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">Participant Quote <span className="text-gray-400 font-normal">(optional)</span></label>
+                      <input
+                        type="text"
+                        value={completeForm.quote}
+                        onChange={e => setCompleteForm(f => ({ ...f, quote: e.target.value }))}
+                        placeholder="e.g. This was an amazing experience..."
+                        className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-300"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">Quoted Person's Name <span className="text-gray-400 font-normal">(optional)</span></label>
+                      <input
+                        type="text"
+                        value={completeForm.quoteName}
+                        onChange={e => setCompleteForm(f => ({ ...f, quoteName: e.target.value }))}
+                        placeholder="e.g. Ramesh K., Donor"
+                        className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-300"
+                      />
+                    </div>
+                    <div className="flex gap-3 pt-2">
+                      <button
+                        type="submit"
+                        disabled={completeFormLoading}
+                        className="flex items-center gap-2 px-6 py-3 bg-green-600 hover:bg-green-700 text-white font-bold rounded-xl transition disabled:opacity-60"
+                      >
+                        {completeFormLoading ? <FaSpinner className="animate-spin" /> : <FaCheckCircle />}
+                        Confirm & Publish
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCompletingEvent(null)}
+                        className="px-6 py-3 border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 transition text-sm"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+            {/* ── END EVENTS PANEL ────────────────────────────────────────────────── */}
 
             {activePanel === 'notifications' && (
               <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-10">

@@ -14,6 +14,8 @@ import {
   sendDonorAlert,
   getAllRequests,
   assignDonorToRequest,
+  emailRespondToRequest,
+  getPlatformStats,
 } from '../controllers/bloodController.js';
 
 import { recordDonation, getDonationHistory } from '../controllers/donationController.js';
@@ -31,6 +33,10 @@ import {
 } from '../controllers/transferController.js';
 
 const router = express.Router();
+
+// ── Public routes (no auth required) ────────────────────────────────────
+router.get('/stats', getPlatformStats);
+router.get('/email-respond', emailRespondToRequest);
 
 router.use(protect);
 

@@ -61,8 +61,8 @@ function Footer() {
           <div>
             <h4 className="text-lg font-semibold mb-4 text-rose-200">For Everyone</h4>
             <ul className="space-y-2 text-sm">
-              <li><Link to="/donor/dashboard" className="hover:text-white transition">Donor Dashboard</Link></li>
-              <li><Link to="/receiver/dashboard" className="hover:text-white transition">Receiver Dashboard</Link></li>
+              <li><Link to="/dashboard" className="hover:text-white transition">Donor Dashboard</Link></li>
+              <li><Link to="/dashboard" className="hover:text-white transition">Receiver Dashboard</Link></li>
               <li><Link to="/hospital/dashboard" className="hover:text-white transition">Hospital Dashboard</Link></li>
               <li><Link to="/submit-story" className="hover:text-white transition">Share Your Story</Link></li>
               <li><Link to="/contact" className="hover:text-white transition">Contact Us</Link></li>
@@ -79,12 +79,12 @@ function Footer() {
               </li>
               <li className="flex items-center gap-3">
                 <FaPhoneAlt className="text-rose-300 text-lg" />
-                <span>+977 980-1234567</span>
+                <span>+977 976-8528140</span>
               </li>
               <li className="flex items-center gap-3">
                 <FaEnvelope className="text-rose-300 text-lg" />
-                <a href="mailto:support@bloodconnect.org.np" className="hover:text-white transition">
-                  support@bloodconnect.org.np
+                <a href="mailto:bloodbridge10@gmail.com" className="hover:text-white transition">
+                  bloodbridge10@gmail.com
                 </a>
               </li>
             </ul>
