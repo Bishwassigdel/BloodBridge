@@ -21,6 +21,11 @@ const bloodRequestSchema = new mongoose.Schema({
   location: String,
   contactPhone: String,
   note: String,
+  // Coordinates saved silently for future map integration — no rework needed later
+  coordinates: {
+    lat: { type: Number, default: null },
+    lng: { type: Number, default: null },
+  },
   status: { 
     type: String, 
     enum: ['pending', 'accepted', 'fulfilled', 'cancelled'], 
@@ -30,7 +35,14 @@ const bloodRequestSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     default: null
-  }
+  },
+  // Per-donor email tokens for accept/reject via email (no login required)
+  emailTokens: [{
+    donorId:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    token:    { type: String },
+    used:     { type: Boolean, default: false },
+    action:   { type: String, default: null }, // 'accepted' | 'rejected'
+  }],
 }, { timestamps: true });
 
 export default mongoose.model('BloodRequest', bloodRequestSchema);

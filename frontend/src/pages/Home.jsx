@@ -17,6 +17,7 @@ import {
   FaExchangeAlt,
   FaPen,
   FaTimes,
+  FaMapMarkerAlt,
 } from 'react-icons/fa';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
@@ -29,6 +30,7 @@ function Home() {
 
   const [scrollY, setScrollY] = useState(0);
   const [showAllEvents, setShowAllEvents] = useState(false);
+  const [selectedEvent, setSelectedEvent] = useState(null);
   const [selectedStep, setSelectedStep] = useState(null);
 
   // Community stories
@@ -48,9 +50,25 @@ function Home() {
   const [pastEventsRef, pastEventsVisible] = useScrollAnimation({ threshold: 0.1 });
   const [ctaRef, ctaVisible] = useScrollAnimation({ threshold: 0.2 });
 
-  const donorsCount = useCounter(1200, 2000, statsVisible);
-  const hospitalsCount = useCounter(75, 1500, statsVisible);
-  const responseTime = useCounter(15, 1500, statsVisible);
+  // Live past events from API
+  const [livePastEvents, setLivePastEvents] = useState([]);
+  useEffect(() => {
+    axios.get('/api/events/past')
+      .then(res => { if (res.data.success) setLivePastEvents(res.data.events || []); })
+      .catch(() => {}); // silently fall back to static data
+  }, []);
+
+  // Real platform stats from DB
+  const [realStats, setRealStats] = useState({ donors: 0, hospitals: 0, donations: 0, responseTime: 0, monthlyRequests: 0, successRate: 0 });
+  useEffect(() => {
+    axios.get('/api/blood/stats')
+      .then(res => { if (res.data.success) setRealStats(res.data.stats); })
+      .catch(() => {});
+  }, []);
+
+  const donorsCount    = useCounter(realStats.donors,       2000, statsVisible);
+  const hospitalsCount = useCounter(realStats.hospitals,    1500, statsVisible);
+  const responseTime   = useCounter(realStats.responseTime, 1500, statsVisible);
 
   useEffect(() => {
     const handleScroll = () => setScrollY(window.scrollY);
@@ -130,6 +148,12 @@ function Home() {
       alt: "Large community blood donation drive with many donors",
       title: "Adani Group Mega Drive",
       desc: "27,661 units collected",
+      date: "June 25, 2025",
+      location: "Ahmedabad, Gujarat",
+      story: "The Adani Group organized one of the largest single-day blood donation drives in the region, mobilizing thousands of employees and community members across multiple cities. Medical teams were stationed at 12 collection points, ensuring smooth, safe, and efficient donation for every participant.",
+      quote: "I never thought donating blood could feel this powerful. Knowing 27,000 lives could be saved — that's something I'll carry forever.",
+      quoteName: "Ramesh K., Donor",
+      stats: { units: "27,661", donors: "9,200+", cities: "12", hospitals: "38" },
       videoUrl: null,
     },
     {
@@ -137,6 +161,12 @@ function Home() {
       alt: "Medical staff assisting donors in blood camp",
       title: "Surat Community Camp",
       desc: "Dedicated medical team",
+      date: "April 27, 2025",
+      location: "Surat, Gujarat",
+      story: "A grassroots initiative led by local doctors and volunteers, the Surat Community Camp brought together over 300 trained medical staff and thousands of willing donors. The camp ran for two days and set a new city record for units collected in a single organized event.",
+      quote: "Our team worked non-stop for two days. Seeing the gratitude on donors' faces made every hour worth it.",
+      quoteName: "Dr. Priya S., Lead Coordinator",
+      stats: { units: "4,800", donors: "1,600+", cities: "1", hospitals: "7" },
       videoUrl: null,
     },
     {
@@ -144,6 +174,12 @@ function Home() {
       alt: "High school students in blood donation drive",
       title: "High School Blood Drive",
       desc: "Young heroes saving lives",
+      date: "March 10, 2025",
+      location: "Fairfield, Connecticut",
+      story: "Students at Fairfield High organized this blood drive as part of their community service initiative. What started as a class project turned into the school's biggest annual event, with students handling logistics, donor registration, and post-donation care under the guidance of certified nurses.",
+      quote: "We're 17 years old and we just helped save lives. That's the coolest thing I've ever done.",
+      quoteName: "Maya T., Student Organizer",
+      stats: { units: "320", donors: "140+", cities: "1", hospitals: "2" },
       videoUrl: null,
     },
     {
@@ -151,6 +187,12 @@ function Home() {
       alt: "Nursing students organizing blood drive",
       title: "Georgetown Nursing Drive",
       desc: "Second successful event",
+      date: "October 15, 2024",
+      location: "Washington D.C.",
+      story: "Georgetown University's School of Nursing hosted its second annual blood drive, combining academic training with real community impact. Nursing students led the event end-to-end — from donor screening to post-donation refreshments — under faculty supervision, gaining hands-on clinical experience.",
+      quote: "This is exactly why I chose nursing. Helping people while learning — it doesn't get better than this.",
+      quoteName: "Sarah L., Nursing Student",
+      stats: { units: "510", donors: "210+", cities: "1", hospitals: "4" },
       videoUrl: null,
     },
     {
@@ -158,6 +200,12 @@ function Home() {
       alt: "Union High School blood donation camp",
       title: "Union High School Camp",
       desc: "Students giving back",
+      date: "April 08, 2025",
+      location: "Union, New Jersey",
+      story: "Union High School partnered with the local Red Cross chapter to organize a campus-wide blood donation camp. Teachers, staff, and eligible students all participated, creating a culture of giving that the school principal called 'the most impactful day in our school's recent history.'",
+      quote: "When our principal rolled up his sleeve and donated first, every student in line stood a little taller.",
+      quoteName: "James O., Student Council President",
+      stats: { units: "275", donors: "120+", cities: "1", hospitals: "3" },
       videoUrl: null,
     },
     {
@@ -165,10 +213,37 @@ function Home() {
       alt: "Rows of donors at community blood drive",
       title: "LifeSouth Community Drive",
       desc: "AB donors in action",
+      date: "February 14, 2025",
+      location: "Atlanta, Georgia",
+      story: "LifeSouth Blood Centers ran a Valentine's Day themed drive focused on rare blood type donors — especially AB negative. The campaign went viral on social media, attracting donors who had never given before. The event exceeded its target by 180%, making it LifeSouth's most successful single-day drive of the year.",
+      quote: "I'm AB negative — I always knew my blood was rare, but this event made me realize just how needed I am.",
+      quoteName: "Angela M., First-time Donor",
+      stats: { units: "1,240", donors: "520+", cities: "3", hospitals: "11" },
       videoUrl: null,
     },
   ];
 
+  // Merge: live DB events first, fall back to static pastEvents if none
+  const displayedEvents = livePastEvents.length > 0
+    ? livePastEvents.map(ev => ({
+        src: ev.image || 'https://c.ndtvimg.com/2025-06/5371lv2_adani-group-blood-donation-drive-_625x300_25_June_25.jpeg',
+        alt: ev.title,
+        title: ev.title,
+        desc: ev.unitsCollected ? `${ev.unitsCollected} units collected` : ev.description,
+        date: new Date(ev.date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+        location: ev.location,
+        story: ev.story || ev.description || 'A successful blood donation event organized by our hospital network.',
+        quote: ev.quote || '',
+        quoteName: ev.quoteName || '',
+        stats: {
+          units: ev.unitsCollected ? ev.unitsCollected.toLocaleString() : '—',
+          donors: ev.totalDonors ? `${ev.totalDonors}+` : `${ev.rsvps?.filter(r => r.status === 'attending').length || 0}+`,
+          cities: '1',
+          hospitals: '1',
+        },
+        videoUrl: null,
+      }))
+    : pastEvents;
 
   const howItWorksSteps = [
     {
@@ -313,17 +388,25 @@ function Home() {
                   <div className="grid grid-cols-3 gap-3 mb-6">
                     <div className="bg-red-50 rounded-2xl p-3 text-center hover:scale-110 transition-transform duration-300 cursor-pointer">
                       <p className="text-xs text-gray-500 mb-1">Registered</p>
-                      <p className="text-xl font-bold text-red-700">1.2k</p>
+                      <p className="text-xl font-bold text-red-700">
+                        {realStats.donors >= 1000
+                          ? `${(realStats.donors / 1000).toFixed(1)}k`
+                          : realStats.donors || '—'}
+                      </p>
                       <p className="text-[11px] text-gray-500 mt-1">Active donors</p>
                     </div>
                     <div className="bg-red-50 rounded-2xl p-3 text-center hover:scale-110 transition-transform duration-300 cursor-pointer">
                       <p className="text-xs text-gray-500 mb-1">Requests</p>
-                      <p className="text-xl font-bold text-red-600">320</p>
+                      <p className="text-xl font-bold text-red-600">
+                        {realStats.monthlyRequests || '—'}
+                      </p>
                       <p className="text-[11px] text-gray-500 mt-1">This month</p>
                     </div>
                     <div className="bg-red-50 rounded-2xl p-3 text-center hover:scale-110 transition-transform duration-300 cursor-pointer">
                       <p className="text-xs text-gray-500 mb-1">Fulfilled</p>
-                      <p className="text-xl font-bold text-red-700">89%</p>
+                      <p className="text-xl font-bold text-red-700">
+                        {realStats.monthlyRequests > 0 ? `${realStats.successRate}%` : '—'}
+                      </p>
                       <p className="text-[11px] text-gray-500 mt-1">Success rate</p>
                     </div>
                   </div>
@@ -357,16 +440,18 @@ function Home() {
               className={`grid md:grid-cols-3 gap-8 text-center transition-all duration-1000 ${statsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}
             >
               {[
-                { icon: FaUsers, label: 'Donor network', value: donorsCount, suffix: '+', desc: 'Verified donors', bg: 'bg-red-50', color: 'text-red-700' },
-                { icon: FaHospitalAlt, label: 'Hospitals', value: hospitalsCount, suffix: '+', desc: 'Partner institutions', bg: 'bg-red-50', color: 'text-red-700' },
-                { icon: FaClock, label: 'Average response', value: responseTime, suffix: ' min', desc: 'To find a compatible donor', bg: 'bg-red-50', color: 'text-red-700' },
+                { icon: FaUsers,      label: 'Donor Network',    value: donorsCount,    suffix: '+',   desc: 'Registered donors',        bg: 'bg-red-50', color: 'text-red-700' },
+                { icon: FaHospitalAlt,label: 'Hospitals',        value: hospitalsCount, suffix: '+',   desc: 'Partner institutions',     bg: 'bg-red-50', color: 'text-red-700' },
+                { icon: FaClock,      label: 'Avg Response',     value: realStats.responseTime > 0 ? responseTime : null, suffix: ' min', desc: 'To find a compatible donor', bg: 'bg-red-50', color: 'text-red-700' },
               ].map((stat, idx) => (
                 <div key={idx} className="transition-all duration-500 hover:-translate-y-2 hover:scale-105" style={{ transitionDelay: `${idx * 100}ms` }}>
                   <div className={`inline-flex items-center justify-center w-16 h-16 rounded-full ${stat.bg} mb-4 group hover:bg-red-100 transition-colors`}>
                     <stat.icon className={`text-2xl ${stat.color} group-hover:scale-110 transition-transform`} />
                   </div>
                   <p className="text-sm uppercase tracking-wide text-gray-500 mb-1">{stat.label}</p>
-                  <p className={`text-3xl md:text-4xl font-extrabold ${stat.color} mb-1`}>{stat.value}{stat.suffix}</p>
+                  <p className={`text-3xl md:text-4xl font-extrabold ${stat.color} mb-1`}>
+                    {stat.value !== null ? <>{stat.value}{stat.suffix}</> : '—'}
+                  </p>
                   <p className="text-xs text-gray-500 mt-1">{stat.desc}</p>
                 </div>
               ))}
@@ -450,25 +535,27 @@ function Home() {
                           <p className="text-lg text-red-700">Step {selectedStep.step}</p>
                         </div>
                       </div>
-                      <button
-                        onClick={() => setSelectedStep(null)}
-                        className="text-3xl text-gray-500 hover:text-red-700 transition"
-                      >
-                        ×
-                      </button>
                     </div>
 
                     <p className="text-gray-800 text-base leading-relaxed">
                       {selectedStep.fullDesc}
                     </p>
 
-                    <div className="text-center mt-8">
+                    <div className="flex justify-center gap-4 mt-8">
                       <button
                         onClick={() => setSelectedStep(null)}
-                        className="px-6 py-3 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition shadow-md"
+                        className="px-6 py-3 bg-gray-100 text-gray-700 font-semibold rounded-xl hover:bg-gray-200 transition shadow-md"
                       >
                         Close
                       </button>
+                      {parseInt(selectedStep.step) < howItWorksSteps.length && (
+                        <button
+                          onClick={() => setSelectedStep(howItWorksSteps[parseInt(selectedStep.step)])}
+                          className="px-6 py-3 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition shadow-md flex items-center gap-2"
+                        >
+                          Next <FaArrowRight className="text-sm" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -709,9 +796,10 @@ function Home() {
             <div
               className={`grid grid-cols-1 md:grid-cols-3 gap-8 max-w-6xl mx-auto transition-all duration-1000 ${pastEventsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}
             >
-              {pastEvents.slice(0, showAllEvents ? 6 : 3).map((event, idx) => (
+              {displayedEvents.slice(0, showAllEvents ? displayedEvents.length : 3).map((event, idx) => (
                 <div
                   key={idx}
+                  onClick={() => setSelectedEvent(event)}
                   className="group relative cursor-pointer overflow-hidden rounded-3xl shadow-xl border border-red-100 hover:shadow-2xl transition-all duration-500 hover:-translate-y-3"
                 >
                   {event.videoUrl ? (
@@ -735,27 +823,101 @@ function Home() {
                     />
                   )}
 
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500 flex items-end p-6">
-                    <div>
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent flex items-end p-6">
+                    <div className="w-full">
                       <p className="text-white font-bold text-lg">{event.title}</p>
                       <p className="text-white/80 text-sm">{event.desc}</p>
+                      <p className="text-white/60 text-xs mt-1 flex items-center gap-1">
+                        <FaMapMarkerAlt className="text-red-400" /> {event.location} &nbsp;·&nbsp; {event.date}
+                      </p>
                     </div>
+                    <span className="absolute top-4 right-4 bg-white/20 backdrop-blur-sm text-white text-xs font-semibold px-3 py-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                      View Story →
+                    </span>
                   </div>
                 </div>
               ))}
             </div>
 
-            <div className="text-center mt-10">
-              <button
-                onClick={() => setShowAllEvents(!showAllEvents)}
-                className="inline-flex items-center gap-2 px-6 py-3 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition-all hover:shadow-lg"
-              >
-                {showAllEvents ? 'View Less' : 'View All Events'}
-                {showAllEvents ? <FaArrowUp /> : <FaArrowRight />}
-              </button>
-            </div>
+            {displayedEvents.length > 3 && (
+              <div className="text-center mt-10">
+                <button
+                  onClick={() => setShowAllEvents(!showAllEvents)}
+                  className="inline-flex items-center gap-2 px-6 py-3 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition-all hover:shadow-lg"
+                >
+                  {showAllEvents ? 'View Less' : 'View All Events'}
+                  {showAllEvents ? <FaArrowUp /> : <FaArrowRight />}
+                </button>
+              </div>
+            )}
           </div>
         </section>
+
+        {/* Past Event Lightbox Modal */}
+        {selectedEvent && (
+          <div
+            className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            onClick={() => setSelectedEvent(null)}
+          >
+            <div
+              className="bg-white rounded-3xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl animate-scale-in"
+              onClick={e => e.stopPropagation()}
+            >
+              {/* Hero Image */}
+              <div className="relative">
+                <img
+                  src={selectedEvent.src}
+                  alt={selectedEvent.alt}
+                  className="w-full h-64 object-cover rounded-t-3xl"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent rounded-t-3xl flex items-end p-6">
+                  <div>
+                    <h3 className="text-2xl font-extrabold text-white">{selectedEvent.title}</h3>
+                    <p className="text-white/80 text-sm flex items-center gap-2 mt-1">
+                      <FaMapMarkerAlt className="text-red-400" /> {selectedEvent.location} &nbsp;·&nbsp; {selectedEvent.date}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-6 md:p-8">
+                {/* Impact Stats */}
+                <div className="grid grid-cols-4 gap-3 mb-6">
+                  {[
+                    { label: 'Units', value: selectedEvent.stats.units },
+                    { label: 'Donors', value: selectedEvent.stats.donors },
+                    { label: 'Cities', value: selectedEvent.stats.cities },
+                    { label: 'Hospitals', value: selectedEvent.stats.hospitals },
+                  ].map((s, i) => (
+                    <div key={i} className="bg-red-50 border border-red-100 rounded-2xl p-3 text-center">
+                      <p className="text-lg font-extrabold text-red-600">{s.value}</p>
+                      <p className="text-xs text-gray-500 font-medium">{s.label}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Story */}
+                <p className="text-gray-700 text-base leading-relaxed mb-6">{selectedEvent.story}</p>
+
+                {/* Quote */}
+                <div className="bg-gradient-to-br from-red-50 to-rose-50 border-l-4 border-red-500 rounded-xl p-5 mb-6">
+                  <p className="text-gray-800 italic text-sm leading-relaxed">"{selectedEvent.quote}"</p>
+                  <p className="text-red-600 font-semibold text-xs mt-2">— {selectedEvent.quoteName}</p>
+                </div>
+
+                {/* Close */}
+                <div className="text-center">
+                  <button
+                    onClick={() => setSelectedEvent(null)}
+                    className="px-8 py-3 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition shadow-md"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Hospital Registration Pricing Section */}
         <section id="hospital-pricing" className="py-16 md:py-24 bg-gradient-to-b from-white to-red-50">

@@ -21,6 +21,8 @@ const notificationSchema = new mongoose.Schema({
       'low_stock',
       'near_expiry',
       'critical_inventory',
+      'event_notification',
+      'event_reminder',
     ],
     default: 'general',
   },
