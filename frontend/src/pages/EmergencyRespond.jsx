@@ -1,8 +1,10 @@
 // src/pages/EmergencyRespond.jsx
 // Handles donor accept/reject via email link — no login required
-import { useEffect, useState } from 'react';
+import { useEffect, useState , lazy, Suspense } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import axios from 'axios';
+import api from '../services/api';
+const MapPicker = lazy(() => import('../components/MapPicker'));
+import { useGeolocation } from '../hooks/useGeolocation';
 
 export default function EmergencyRespond() {
   const [searchParams] = useSearchParams();
@@ -12,6 +14,10 @@ export default function EmergencyRespond() {
   const [status, setStatus]   = useState('loading'); // 'loading' | 'success' | 'error'
   const [data,   setData]     = useState(null);
   const [message, setMessage] = useState('');
+  const [showMap, setShowMap] = useState(false);
+
+  // Donor's own GPS location (for direction link)
+  const { location: donorLocation, getLocation: getDonorLocation } = useGeolocation();
 
   useEffect(() => {
     if (!token || !action) {
@@ -22,7 +28,7 @@ export default function EmergencyRespond() {
 
     const respond = async () => {
       try {
-        const res = await axios.get('/api/blood/email-respond', {
+        const res = await api.get('/api/blood/email-respond', {
           params: { token, action },
         });
         setData(res.data);
@@ -123,6 +129,81 @@ export default function EmergencyRespond() {
                 <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-3 text-sm text-yellow-700">
                   ⚠️ This link has already been used.
                 </div>
+              )}
+
+              {/* ── Map section (only after accepted) ──────────────────── */}
+              {data?.action === 'accepted' && data?.hospitalCoords?.lat && (
+                <div className="mt-2">
+                  <button
+                    onClick={() => {
+                      setShowMap(m => !m);
+                      if (!donorLocation) getDonorLocation().catch(() => {});
+                    }}
+                    className="w-full flex items-center justify-center gap-2 py-2.5 border-2 border-green-300 text-green-700 font-semibold rounded-xl hover:bg-green-50 transition text-sm"
+                  >
+                    🗺️ {showMap ? 'Hide Map' : 'Show Hospital on Map'}
+                  </button>
+
+                  {showMap && (
+                    <div className="mt-3 rounded-2xl overflow-hidden border border-green-200">
+                      <Suspense fallback={<div style={{height:"260px",display:"flex",alignItems:"center",justifyContent:"center",background:"#fef2f2"}}><div style={{width:28,height:28,border:"4px solid #fecaca",borderTopColor:"#dc2626",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/></div>}>
+                      <MapPicker
+                        height="260px"
+                        center={[data.hospitalCoords.lat, data.hospitalCoords.lng]}
+                        zoom={14}
+                        userLocation={donorLocation}
+                        markers={[{
+                          id: 'hospital',
+                          lat: data.hospitalCoords.lat,
+                          lng: data.hospitalCoords.lng,
+                          type: 'hospital',
+                          label: data.hospital || 'Hospital',
+                          subLabel: 'Donation destination',
+                          isEmergency: true,
+                          directionsUrl: donorLocation
+                            ? `https://www.openstreetmap.org/directions?from=${donorLocation.lat},${donorLocation.lng}&to=${data.hospitalCoords.lat},${data.hospitalCoords.lng}`
+                            : `https://www.openstreetmap.org/?mlat=${data.hospitalCoords.lat}&mlon=${data.hospitalCoords.lng}&zoom=16`,
+                        }]}
+                        readOnly
+                      />
+                      </Suspense>
+                      <div className="bg-green-50 px-4 py-3 border-t border-green-100 flex gap-2">
+                        <a
+                          href={
+                            donorLocation
+                              ? `https://www.openstreetmap.org/directions?from=${donorLocation.lat},${donorLocation.lng}&to=${data.hospitalCoords.lat},${data.hospitalCoords.lng}`
+                              : `https://www.openstreetmap.org/?mlat=${data.hospitalCoords.lat}&mlon=${data.hospitalCoords.lng}&zoom=16`
+                          }
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex-1 text-center py-2 bg-green-600 text-white text-xs font-bold rounded-xl hover:bg-green-700 transition"
+                        >
+                          🗺️ Get Directions (OpenStreetMap)
+                        </a>
+                        <a
+                          href={`https://www.google.com/maps/dir/?api=1&destination=${data.hospitalCoords.lat},${data.hospitalCoords.lng}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex-1 text-center py-2 bg-blue-600 text-white text-xs font-bold rounded-xl hover:bg-blue-700 transition"
+                        >
+                          📱 Open in Google Maps
+                        </a>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Fallback directions when no coordinates saved */}
+              {data?.action === 'accepted' && !data?.hospitalCoords?.lat && data?.hospital && (
+                <a
+                  href={`https://www.openstreetmap.org/search?query=${encodeURIComponent(data.hospital)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block w-full text-center py-2.5 mt-2 border-2 border-green-300 text-green-700 font-semibold rounded-xl hover:bg-green-50 transition text-sm"
+                >
+                  🗺️ Find Hospital on Map
+                </a>
               )}
             </div>
 

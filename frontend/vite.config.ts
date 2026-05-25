@@ -6,40 +6,84 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
 
+  // Store Vite's pre-bundle cache in a stable location inside the project
+  // so it survives between sessions and npm installs don't bust it.
+  cacheDir: 'node_modules/.vite',
+
+  // Pre-bundle every heavy dep once at startup.
+  // This turns multiple "on-demand transform" calls into a single cached file.
+  optimizeDeps: {
+    include: [
+      'react', 'react-dom', 'react-router-dom',
+      'axios', 'leaflet', 'react-leaflet',
+      '@react-oauth/google',
+      // react-icons: pre-bundle all subpaths used in the app
+      'react-icons/fa',
+      'react-icons/fi',
+      'react-icons/md',
+      'react-icons/bs',
+      'react-icons/hi',
+    ],
+    // Force re-optimisation when lockfile changes; otherwise use the cache.
+    force: false,
+  },
+
   // Server configuration
   server: {
-    // Frontend will run on port 5173 (Vite default)
     port: 5173,
 
     // Proxy API calls to backend (prevents CORS issues in development)
     proxy: {
-      // All requests starting with /api will be forwarded to backend
       '/api': {
-        target: 'http://localhost:3001',     // your Express backend port
-        changeOrigin: true,                  // needed when proxying to different origin
-        secure: false,                       // for local http (not https)
-        rewrite: (path) => path.replace(/^\/api/, '/api'), // optional - keeps /api prefix
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path.replace(/^\/api/, '/api'),
+      },
+      '/uploads': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        secure: false,
       },
     },
 
-    // Optional: open browser automatically when dev server starts
-    open: true,
+    // Don't auto-open the browser — it opens before pre-bundling finishes,
+    // causing every dep to be transformed on-demand (slow blank-screen load).
+    // Open manually after you see "ready in Xms" in the terminal.
+    open: false,
 
-    // Optional: better HMR (hot module replacement) behavior
     hmr: {
       clientPort: 5173,
     },
 
-    // Suppress COOP warning from Vite HMR postMessage
     headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin-allow-popups',
+      'Cross-Origin-Opener-Policy': 'unsafe-none',
     },
   },
 
-  // Optional: build configuration (useful when you run `vite build`)
+  // Build configuration
   build: {
     outDir: 'dist',
-    sourcemap: true, // helpful for debugging production builds
+    // Sourcemaps only in dev — shipping them to prod adds ~3× bundle size
+    sourcemap: false,
+    // Warn if any single chunk exceeds 500KB (default is 500KB anyway; being explicit)
+    chunkSizeWarningLimit: 500,
+    rollupOptions: {
+      output: {
+        // Split vendor code into named chunks — browsers cache each independently
+        // so updating your app code doesn't bust the React/Leaflet cache entry
+        manualChunks: {
+          // React core — changes almost never
+          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+          // Map library — large, changes rarely
+          'vendor-leaflet': ['leaflet', 'react-leaflet'],
+          // Icon set — large, changes rarely
+          'vendor-icons': ['react-icons'],
+          // HTTP + auth helpers
+          'vendor-utils': ['axios', '@react-oauth/google'],
+        },
+      },
+    },
   },
 
   // Optional: resolve aliases (makes imports cleaner)

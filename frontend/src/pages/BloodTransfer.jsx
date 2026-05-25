@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import axios from 'axios';
+import api from '../services/api';
 import { FaHeartbeat, FaTint, FaCheck, FaTimes } from 'react-icons/fa';
 
 const BloodTransfer = () => {
@@ -38,7 +38,7 @@ const BloodTransfer = () => {
 
     setActionLoading(true);
     try {
-      const response = await axios.post('/api/blood/transfer/accept', { token }, {
+      const response = await api.post('/api/blood/transfer/accept', { token }, {
         headers: { 'x-auth-token': localStorage.getItem('token') },
       });
 
@@ -63,7 +63,7 @@ const BloodTransfer = () => {
 
     setActionLoading(true);
     try {
-      const response = await axios.post('/api/blood/transfer/reject',
+      const response = await api.post('/api/blood/transfer/reject',
         { token, reason: rejectionReason },
         { headers: { 'x-auth-token': localStorage.getItem('token') } }
       );

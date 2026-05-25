@@ -1,10 +1,16 @@
 // src/pages/Dashboard.jsx
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import DonorEligibility from '../components/DonorEligibility';
 import Toast, { useToast } from '../components/Toast';
 import LifeSaverModal from '../components/LifeSaverModal';
+// Leaflet is ~150 KB — lazy-load so the dashboard shell renders immediately
+// and the map only downloads when the user clicks "Show Map"
+const MapPicker = lazy(() => import('../components/MapPicker'));
+import DonationCertificate, { DonorBadge } from '../components/DonationCertificate';
+import { usePushNotifications } from '../hooks/usePushNotifications';
+import { useGeolocation, reverseGeocode } from '../hooks/useGeolocation';
 import {
   FaHeartbeat,
   FaClipboardList,
@@ -45,7 +51,7 @@ const EMERGENCY_HOTLINE = '01-4288485';
 const EMERGENCY_WHATSAPP = '97714288485';
 
 const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
-import axios from 'axios';
+import api, { invalidateFrontendCache } from '../services/api';
 
 // Helper: relative time
 function timeAgo(dateStr) {
@@ -68,7 +74,7 @@ const NOTIF_CONFIG = {
     labelBg: 'bg-red-100 text-red-700',
   },
   request_accepted: {
-    icon: '✅',
+    
     bg: 'bg-green-50',
     border: 'border-green-200',
     accent: 'bg-green-500',
@@ -84,7 +90,7 @@ const NOTIF_CONFIG = {
     labelBg: 'bg-purple-100 text-purple-700',
   },
   event_notification: {
-    icon: '📅',
+    
     bg: 'bg-purple-50',
     border: 'border-purple-200',
     accent: 'bg-purple-500',
@@ -92,7 +98,7 @@ const NOTIF_CONFIG = {
     labelBg: 'bg-purple-100 text-purple-700',
   },
   event_reminder: {
-    icon: '⏰',
+   
     bg: 'bg-yellow-50',
     border: 'border-yellow-200',
     accent: 'bg-yellow-500',
@@ -110,8 +116,9 @@ const NOTIF_CONFIG = {
 };
 
 function Dashboard() {
-  const { user, logout } = useAuth();
+  const { user, loading: authLoading, logout } = useAuth();
   const navigate = useNavigate();
+  const { permission: pushPermission, supported: pushSupported, requestPermission: requestPush, notifyFromSSE } = usePushNotifications();
 
   const [activePanel, setActivePanel] = useState('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -127,6 +134,9 @@ function Dashboard() {
 
   // Toast notifications
   const toast = useToast();
+
+  // Certificate modal
+  const [showCertificate, setShowCertificate] = useState(false);
 
   // LifeSaver modal (shown after donor accepts)
   const [lifeSaverModal, setLifeSaverModal] = useState({ open: false, request: null });
@@ -144,6 +154,47 @@ function Dashboard() {
   const [requestLoading, setRequestLoading] = useState(false);
   const [requestSuccess, setRequestSuccess] = useState('');
   const [requestError, setRequestError] = useState('');
+
+  // ── Map state ─────────────────────────────────────────────────────────────
+  const [showNearbyMap, setShowNearbyMap] = useState(false);
+  const { location: mapUserLocation, loading: mapGpsLoading, error: mapGpsError, getLocation: getMapLocation } = useGeolocation();
+
+  // ── GPS for request-blood location field ─────────────────────────────────
+  const [reqGpsLoading, setReqGpsLoading]   = useState(false);
+  const [reqGeoSuccess, setReqGeoSuccess]   = useState(false);
+  const [showReqMap, setShowReqMap]         = useState(false);
+  const [reqPickedCoords, setReqPickedCoords] = useState(null);
+  const [reqGeocoding, setReqGeocoding]     = useState(false);
+  const { getLocation: getReqLocation } = useGeolocation();
+
+  const handleReqDetectLocation = async (fieldName) => {
+    setReqGpsLoading(true);
+    setReqGeoSuccess(false);
+    try {
+      const coords = await getReqLocation();
+      setReqGeocoding(true);
+      const label  = await reverseGeocode(coords.lat, coords.lng);
+      setRequestForm(prev => ({ ...prev, [fieldName]: label }));
+      setReqPickedCoords(coords);
+      setReqGeoSuccess(true);
+    } catch { /* silently ignore */ }
+    setReqGpsLoading(false);
+    setReqGeocoding(false);
+  };
+
+  const handleReqMapPick = async (coords) => {
+    setReqPickedCoords(coords);
+    setReqGeocoding(true);
+    try {
+      const label = await reverseGeocode(coords.lat, coords.lng);
+      setRequestForm(prev => ({ ...prev, location: label }));
+      setReqGeoSuccess(true);
+    } catch {
+      setRequestForm(prev => ({ ...prev, location: `${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}` }));
+    } finally {
+      setReqGeocoding(false);
+    }
+  };
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -192,6 +243,9 @@ function Dashboard() {
   // ────────────────────────────────────────────────────────────────────────
 
   const fetchData = async (isRetry = false) => {
+    // Don't run until AuthContext has finished initialising and user is loaded
+    if (authLoading || !user?._id) return;
+
     if (!localStorage.getItem('token')) {
       navigate('/login');
       return;
@@ -202,18 +256,18 @@ function Dashboard() {
 
     try {
       const promises = [
-        axios.get('/api/notifications'),
-        axios.get('/api/stories'),
-        axios.get('/api/events'),
+        api.get('/api/notifications'),
+        api.get('/api/stories'),
+        api.get('/api/events'),
       ];
 
       if (isDonor) {
-        promises.push(axios.get('/api/blood/matching-requests'));
-        promises.push(axios.get('/api/blood/my-donations'));
+        promises.push(api.get('/api/blood/matching-requests'));
+        promises.push(api.get('/api/blood/my-donations'));
       }
 
       if (isReceiver) {
-        promises.push(axios.get('/api/blood/my-requests'));
+        promises.push(api.get('/api/blood/my-requests'));
       }
 
       const results = await Promise.allSettled(promises);
@@ -263,14 +317,20 @@ function Dashboard() {
   useEffect(() => {
     fetchData();
 
-    const interval = setInterval(() => fetchData(), 30000);
+    // SSE handles real-time updates; poll every 2 min only as a stale-data safety net
+    const interval = setInterval(() => fetchData(), 120000);
     return () => clearInterval(interval);
-  }, [isDonor, isReceiver, navigate, user?.role, errorRetryCount]);
+  // user?._id is stable once loaded; authLoading gates early runs
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?._id, authLoading, errorRetryCount]);
 
   // ── SSE: Real-time connection ────────────────────────────────────────────
   useEffect(() => {
+    // Don't open SSE until auth is complete and we have a real user ID
+    if (authLoading || !user?._id) return;
+
     const token = localStorage.getItem('token');
-    if (!token || !user) return;
+    if (!token) return;
 
     const apiBase = import.meta.env.VITE_API_URL || 'http://localhost:3001';
     const cleanToken = token.replace(/^["']+|["']+$/g, '').trim();
@@ -299,6 +359,7 @@ function Dashboard() {
           status: 'pending',
           createdAt: data.createdAt,
           requester: { username: data.requesterName },
+          coordinates: data.coordinates || null,  // ← now included from SSE, map pin appears instantly
         };
         // Emergency goes first
         if (data.urgency === 'emergency') return [newReq, ...prev];
@@ -319,6 +380,8 @@ function Dashboard() {
         playAlertSound();
         toast.error('🚨 EMERGENCY REQUEST', `${data.bloodGroup} blood needed at ${data.hospital}!`, 8000);
       }
+      // Browser push notification
+      notifyFromSSE('new_blood_request', data);
     });
 
     // ── DONOR: Escalation — still no donor after 10 min ─────────────────
@@ -379,13 +442,15 @@ function Dashboard() {
         data,
       }, ...prev]);
       toast.success('📅 New Event!', `${data.hospitalName} is hosting a blood donation drive!`, 7000);
+      notifyFromSSE('event_notification', data);
     });
 
     return () => {
       es.close();
       sseRef.current = null;
     };
-  }, [user?._id]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?._id, authLoading]);
 
   // ── Play alert sound (emergency) ────────────────────────────────────────
   const playAlertSound = useCallback(() => {
@@ -410,7 +475,7 @@ function Dashboard() {
   const handleRSVP = async (eventId, status) => {
     setRsvpLoading(eventId);
     try {
-      const res = await axios.post(`/api/events/${eventId}/rsvp`, { status });
+      const res = await api.post(`/api/events/${eventId}/rsvp`, { status });
       if (res.data.success) {
         setUpcomingEvents(prev => prev.map(ev =>
           ev._id !== eventId ? ev :
@@ -453,7 +518,7 @@ function Dashboard() {
         });
       } catch (_) {}
 
-      const res = await axios.post('/api/blood/request', {
+      const res = await api.post('/api/blood/request', {
         hospital: sosHospital,
         bloodGroup: user?.bloodGroup,
         units: sosUnits,
@@ -480,7 +545,7 @@ function Dashboard() {
         setSosCooldownUntil(new Date(Date.now() + 10 * 60 * 1000));
 
         // Refresh my requests
-        const reqRes = await axios.get('/api/blood/my-requests');
+        const reqRes = await api.get('/api/blood/my-requests');
         setMyRequests(reqRes.data.requests || []);
 
         // Auto-open WhatsApp to hotline
@@ -492,7 +557,7 @@ function Dashboard() {
         // Auto-notify emergency contact via WhatsApp if saved
         if (user?.emergencyContact?.phone) {
           const ecMsg = encodeURIComponent(
-            `⚠️ ${user.username} has sent an emergency blood request at ${sosHospital}. Please assist. Contact: ${user.phone}`
+            ` ${user.username} has sent an emergency blood request at ${sosHospital}. Please assist. Contact: ${user.phone}`
           );
           setTimeout(() => window.open(`https://wa.me/${user.emergencyContact.phone.replace(/[^0-9]/g, '')}?text=${ecMsg}`, '_blank'), 2500);
         }
@@ -510,11 +575,12 @@ function Dashboard() {
   const handleCancelSOS = async () => {
     if (!activeSOS) return;
     try {
-      await axios.patch(`/api/blood/${activeSOS.requestId}/cancel`, {});
+      await api.patch(`/api/blood/${activeSOS.requestId}/cancel`, {});
+      invalidateFrontendCache('/api/blood');
       setActiveSOS(null);
       setSosCooldownUntil(null);
       toast.success('SOS Cancelled', 'Your emergency request has been cancelled.');
-      const reqRes = await axios.get('/api/blood/my-requests');
+      const reqRes = await api.get('/api/blood/my-requests');
       setMyRequests(reqRes.data.requests || []);
     } catch (err) {
       toast.error('Could not cancel', err.response?.data?.message || 'Please try again.');
@@ -536,12 +602,14 @@ function Dashboard() {
     const acceptedReq = matchingRequests.find(r => r._id === requestId);
 
     try {
-      await axios.patch(`/api/blood/${requestId}/accept`, {});
+      await api.patch(`/api/blood/${requestId}/accept`, {});
+      invalidateFrontendCache('/api/blood');
+      invalidateFrontendCache('/api/notifications');
 
       const [reqRes, notifRes, donRes] = await Promise.all([
-        axios.get('/api/blood/matching-requests'),
-        axios.get('/api/notifications'),
-        axios.get('/api/blood/my-donations'),
+        api.get('/api/blood/matching-requests'),
+        api.get('/api/notifications'),
+        api.get('/api/blood/my-donations'),
       ]);
 
       setMatchingRequests(reqRes.data.requests || []);
@@ -575,7 +643,7 @@ function Dashboard() {
   const handleDeclineRequest = async (requestId) => {
     setLoadingDecline(requestId);
     try {
-      await axios.patch(`/api/blood/${requestId}/decline`, {});
+      await api.patch(`/api/blood/${requestId}/decline`, {});
       setDeclinedIds(prev => new Set([...prev, requestId]));
       setMatchingRequests(prev => prev.filter(r => r._id !== requestId));
     } catch (err) {
@@ -590,7 +658,8 @@ function Dashboard() {
   const handleFulfillRequest = async (requestId) => {
     setLoadingFulfill(requestId);
     try {
-      await axios.patch(`/api/blood/${requestId}/fulfill`, {});
+      await api.patch(`/api/blood/${requestId}/fulfill`, {});
+      invalidateFrontendCache('/api/blood');
 
       // Update the request status locally — no need to refetch all
       setMyRequests(prev =>
@@ -614,7 +683,7 @@ function Dashboard() {
 
   const markAsRead = async (notifId) => {
     try {
-      await axios.patch(`/api/notifications/${notifId}/read`, {});
+      await api.patch(`/api/notifications/${notifId}/read`, {});
       setNotifications(prev =>
         prev.map(n => (n._id === notifId ? { ...n, read: true } : n))
       );
@@ -628,7 +697,7 @@ function Dashboard() {
     if (!unread.length) return;
     try {
       await Promise.allSettled(
-        unread.map(n => axios.patch(`/api/notifications/${n._id}/read`, {}))
+        unread.map(n => api.patch(`/api/notifications/${n._id}/read`, {}))
       );
       setNotifications(prev => prev.map(n => ({ ...n, read: true })));
     } catch (err) {
@@ -639,7 +708,7 @@ function Dashboard() {
   const handleCancelRequest = async (requestId) => {
     setLoadingCancel(requestId);
     try {
-      await axios.patch(`/api/blood/${requestId}/cancel`, {});
+      await api.patch(`/api/blood/${requestId}/cancel`, {});
       setMyRequests(prev => prev.map(r => r._id === requestId ? { ...r, status: 'cancelled' } : r));
       toast.success('Request cancelled', 'Your blood request has been cancelled.');
     } catch (err) {
@@ -670,7 +739,7 @@ function Dashboard() {
   const handleSubmitEdit = async (requestId) => {
     setLoadingEdit(true);
     try {
-      const res = await axios.patch(`/api/blood/${requestId}/edit`, editForm);
+      const res = await api.patch(`/api/blood/${requestId}/edit`, editForm);
       setMyRequests(prev => prev.map(r => r._id === requestId ? res.data.request : r));
       setEditingRequestId(null);
       toast.success('Request updated!', 'Your blood request has been updated successfully.');
@@ -687,11 +756,11 @@ function Dashboard() {
     setStoryError('');
     setStorySuccess('');
     try {
-      const res = await axios.post('/api/stories', storyForm);
+      const res = await api.post('/api/stories', storyForm);
       if (res.data.success) {
         setStorySuccess('Your story has been shared!');
         setStoryForm({ title: '', message: '' });
-        const storiesRes = await axios.get('/api/stories');
+        const storiesRes = await api.get('/api/stories');
         setStories(storiesRes.data.stories || []);
       }
     } catch (err) {
@@ -713,7 +782,7 @@ function Dashboard() {
     setRequestError('');
 
     try {
-      const res = await axios.post('/api/blood/request', requestForm);
+      const res = await api.post('/api/blood/request', requestForm);
 
       if (res.data.success) {
         // Show success toast
@@ -733,7 +802,7 @@ function Dashboard() {
           note: '',
         });
 
-        const reqRes = await axios.get('/api/blood/my-requests');
+        const reqRes = await api.get('/api/blood/my-requests');
         setMyRequests(reqRes.data.requests || []);
 
         setActivePanel('requests');
@@ -791,6 +860,15 @@ function Dashboard() {
       onClose={() => setLifeSaverModal({ open: false, request: null })}
     />
 
+    {/* Donation Certificate modal */}
+    {showCertificate && (
+      <DonationCertificate
+        user={user}
+        donations={donations}
+        onClose={() => setShowCertificate(false)}
+      />
+    )}
+
     <div className="min-h-screen bg-gradient-to-br from-red-50 via-rose-50 to-white flex">
       {/* Mobile toggle */}
       <button
@@ -831,8 +909,8 @@ function Dashboard() {
               panel: 'requests',
               badge: isDonor && newRequestCount > 0 ? newRequestCount : null,
             },
-            ...(isDonor ? [{
-              name: 'History',
+            ...(isDonor || isReceiver ? [{
+              name: isDonor ? 'Donation History' : 'Received History',
               icon: FaHistory,
               panel: 'history',
               badge: null,
@@ -993,6 +1071,55 @@ function Dashboard() {
               )}
             </div>
 
+            {/* ── DONOR BADGE + CERTIFICATE + PUSH NOTIFICATIONS ──────── */}
+            {isDonor && (
+              <div className="flex flex-wrap gap-3 items-center bg-white rounded-2xl shadow border border-red-100 p-4">
+                {/* Badge */}
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Your Donor Badge</p>
+                  <DonorBadge totalDonations={donations.length} size="md" />
+                </div>
+
+                {/* Certificate button */}
+                <button
+                  onClick={() => setShowCertificate(true)}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-red-600 to-rose-600 text-white text-sm font-semibold rounded-xl hover:opacity-90 transition shadow"
+                >
+                  🏆 My Certificate
+                </button>
+
+                {/* Push notification toggle */}
+                {pushSupported && (
+                  <button
+                    onClick={pushPermission === 'granted' ? undefined : requestPush}
+                    className={`flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-xl border-2 transition ${
+                      pushPermission === 'granted'
+                        ? 'border-green-300 text-green-700 bg-green-50 cursor-default'
+                        : pushPermission === 'denied'
+                        ? 'border-gray-200 text-gray-400 cursor-not-allowed'
+                        : 'border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100'
+                    }`}
+                    title={pushPermission === 'denied' ? 'Notifications blocked in browser settings' : ''}
+                  >
+                    {pushPermission === 'granted' ? '🔔 Notifications On' : pushPermission === 'denied' ? '🔕 Blocked' : '🔔 Enable Alerts'}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Push notification banner for receivers (not donors) */}
+            {isReceiver && pushSupported && pushPermission !== 'granted' && pushPermission !== 'denied' && (
+              <div className="flex items-center justify-between bg-blue-50 border border-blue-200 rounded-2xl px-4 py-3">
+                <p className="text-sm text-blue-700">🔔 Enable browser alerts to get instant blood request updates even when the tab is minimized</p>
+                <button
+                  onClick={requestPush}
+                  className="ml-4 flex-shrink-0 px-4 py-1.5 bg-blue-600 text-white text-xs font-bold rounded-lg hover:bg-blue-700 transition"
+                >
+                  Enable
+                </button>
+              </div>
+            )}
+
             {/* ── SOS BUTTON (Receiver only) ─────────────────────────── */}
             {isReceiver && (
               <div className="mt-2">
@@ -1138,6 +1265,127 @@ function Dashboard() {
                 </div>
               </div>
             )}
+
+            {/* ── Nearby Blood Requests Map ─────────────────────────── */}
+            <div className="bg-white rounded-2xl shadow border border-red-50 overflow-hidden">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+                <div className="flex items-center gap-2">
+                  <FaMapMarkerAlt className="text-red-500" />
+                  <h3 className="font-bold text-gray-800 text-base">Nearby Blood Requests</h3>
+                  {matchingRequests.some(r => r.urgency === 'emergency' && r.status === 'pending') && (
+                    <span className="bg-red-600 text-white text-xs font-bold px-2 py-0.5 rounded-full animate-pulse">
+                      EMERGENCY
+                    </span>
+                  )}
+                </div>
+                <button
+                  onClick={() => {
+                    setShowNearbyMap(m => !m);
+                    if (!mapUserLocation && !showNearbyMap) {
+                      getMapLocation().catch(() => {});
+                    }
+                  }}
+                  disabled={mapGpsLoading}
+                  className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 rounded-xl transition disabled:opacity-60"
+                >
+                  {mapGpsLoading
+                    ? <span className="w-3 h-3 border border-red-400 border-t-transparent rounded-full animate-spin" />
+                    : showNearbyMap ? '▲ Hide Map' : '🗺️ Show Map'
+                  }
+                </button>
+              </div>
+
+              {mapGpsError && (
+                <p className="text-xs text-red-500 px-5 py-2 bg-red-50">{mapGpsError}</p>
+              )}
+
+              {showNearbyMap && (
+                <div>
+                  <Suspense fallback={
+                    <div className="h-[340px] flex items-center justify-center bg-red-50">
+                      <div className="w-7 h-7 border-4 border-red-200 border-t-red-600 rounded-full animate-spin" />
+                    </div>
+                  }>
+                  <MapPicker
+                    height="340px"
+                    center={
+                      mapUserLocation
+                        ? [mapUserLocation.lat, mapUserLocation.lng]
+                        : [27.7172, 85.3240]
+                    }
+                    zoom={12}
+                    userLocation={mapUserLocation}
+                    radiusKm={mapUserLocation ? 15 : null}
+                    fitMarkers={!mapUserLocation}
+                    markers={[
+                      // Pending matching requests as map pins
+                      ...(isDonor ? matchingRequests : myRequests)
+                        .filter(r => r.status === 'pending' && r.coordinates?.lat)
+                        .map(r => ({
+                          id:          r._id,
+                          lat:         r.coordinates.lat,
+                          lng:         r.coordinates.lng,
+                          bloodGroup:  r.bloodGroup,
+                          label:       r.hospital || r.location || 'Blood Request',
+                          subLabel:    `${r.bloodGroup} · ${r.units} unit${r.units > 1 ? 's' : ''}`,
+                          units:       r.units,
+                          isEmergency: r.urgency === 'emergency',
+                          phone:       r.contactPhone,
+                        })),
+                    ]}
+                  />
+                  </Suspense>
+                  <div className="px-4 py-2 flex flex-wrap gap-3 text-xs text-gray-500 border-t border-gray-100 bg-gray-50">
+                    <span className="flex items-center gap-1">
+                      <span className="w-3 h-3 rounded-full bg-blue-500 inline-block" /> You
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="w-3 h-3 rounded-full bg-red-600 inline-block animate-pulse" /> Emergency
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="w-3 h-3 rounded-full bg-blue-700 inline-block" /> Normal
+                    </span>
+                    <span className="ml-auto italic text-gray-400">Click pin to see details</span>
+                  </div>
+                </div>
+              )}
+
+              {!showNearbyMap && (
+                <div className="px-5 py-4">
+                  {(isDonor ? matchingRequests : myRequests).filter(r => r.status === 'pending').length === 0 ? (
+                    <p className="text-sm text-gray-400 text-center py-2">No pending requests right now.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {(isDonor ? matchingRequests : myRequests)
+                        .filter(r => r.status === 'pending')
+                        .slice(0, 3)
+                        .map(r => (
+                          <div
+                            key={r._id}
+                            className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border text-sm ${
+                              r.urgency === 'emergency'
+                                ? 'border-red-200 bg-red-50'
+                                : 'border-gray-100 bg-gray-50'
+                            }`}
+                          >
+                            <span className={`font-bold text-xs px-2 py-0.5 rounded-full ${
+                              r.urgency === 'emergency'
+                                ? 'bg-red-600 text-white'
+                                : 'bg-blue-100 text-blue-700'
+                            }`}>{r.bloodGroup}</span>
+                            <span className="flex-1 text-gray-700 truncate">
+                              {r.hospital || r.location}
+                            </span>
+                            {r.urgency === 'emergency' && (
+                              <span className="text-xs text-red-600 font-semibold animate-pulse">🚨 URGENT</span>
+                            )}
+                          </div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
 
             {/* Eligibility overview for donors */}
             {isDonor && (
@@ -1394,18 +1642,92 @@ function Dashboard() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1.5">Location / District</label>
+                  <label className="block text-xs font-medium text-gray-500 mb-1.5">
+                    Location / District
+                    <span className="ml-1 text-blue-500 text-xs font-normal">(click 📍 to detect)</span>
+                  </label>
                   <div className="relative">
-                    <FaMapMarkerAlt className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 text-base" />
+                    <button
+                      type="button"
+                      onClick={() => handleReqDetectLocation('location')}
+                      disabled={reqGpsLoading || reqGeocoding}
+                      title="Click to detect your live location"
+                      className="absolute left-3 top-1/2 -translate-y-1/2 z-10 p-0.5 group disabled:cursor-not-allowed"
+                    >
+                      {reqGpsLoading || reqGeocoding
+                        ? <FaSpinner className="text-sm text-red-400 animate-spin" />
+                        : reqGeoSuccess
+                          ? <FaMapMarkerAlt className="text-sm text-green-500" />
+                          : <FaMapMarkerAlt className="text-sm text-gray-400 group-hover:text-red-500 group-hover:scale-125 transition-all duration-150" />
+                      }
+                    </button>
                     <input
                       type="text"
                       name="location"
                       value={requestForm.location}
-                      onChange={handleRequestChange}
-                      placeholder="e.g. Kathmandu"
-                      className="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 focus:border-red-400 focus:ring-2 focus:ring-red-100 outline-none text-sm"
+                      onChange={(e) => { handleRequestChange(e); setReqGeoSuccess(false); }}
+                      placeholder="Click 📍 or type district…"
+                      className={`w-full pl-10 pr-4 py-3 rounded-xl border outline-none text-sm focus:ring-2 ${
+                        reqGeoSuccess
+                          ? 'border-green-400 focus:border-green-500 focus:ring-green-100'
+                          : 'border-gray-200 focus:border-red-400 focus:ring-red-100'
+                      }`}
                     />
                   </div>
+
+                  {/* Status + Map toggle */}
+                  {(reqGpsLoading || reqGeocoding) && (
+                    <p className="mt-1 text-xs text-blue-500 flex items-center gap-1">
+                      <span className="w-2.5 h-2.5 border border-blue-400 border-t-transparent rounded-full animate-spin inline-block" />
+                      {reqGeocoding ? 'Looking up address…' : 'Detecting location…'}
+                    </p>
+                  )}
+                  {reqGeoSuccess && !reqGpsLoading && !reqGeocoding && (
+                    <p className="mt-1 text-xs text-green-600 font-medium">✅ Location detected</p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowReqMap(m => !m)}
+                    className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-red-600 hover:text-red-800 transition-colors"
+                  >
+                    🗺️ {showReqMap ? 'Hide Map' : 'Pick on map'}
+                  </button>
+                  {showReqMap && (
+                    <div className="mt-2 rounded-xl overflow-hidden border border-red-200 shadow-sm">
+                      <Suspense fallback={
+                        <div className="h-[230px] flex items-center justify-center bg-red-50">
+                          <div className="w-6 h-6 border-4 border-red-200 border-t-red-600 rounded-full animate-spin" />
+                        </div>
+                      }>
+                      <MapPicker
+                        height="230px"
+                        center={
+                          reqPickedCoords
+                            ? [reqPickedCoords.lat, reqPickedCoords.lng]
+                            : [27.7172, 85.3240]
+                        }
+                        zoom={13}
+                        pickedLocation={reqPickedCoords}
+                        onLocationPick={handleReqMapPick}
+                        markers={
+                          reqPickedCoords
+                            ? [{
+                                id: 'req-loc',
+                                lat: reqPickedCoords.lat,
+                                lng: reqPickedCoords.lng,
+                                type: 'user',
+                                label: 'Request Location',
+                                subLabel: requestForm.location || '',
+                              }]
+                            : []
+                        }
+                      />
+                      </Suspense>
+                      <p className="text-xs text-center text-gray-500 py-1.5 bg-gray-50 border-t border-red-100">
+                        Click to pin the exact location
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -1966,7 +2288,7 @@ function Dashboard() {
           );
         })()}
 
-        {/* Donation History */}
+        {/* Donation History — donors */}
         {activePanel === 'history' && isDonor && (
           <DonorEligibility
             section="history"
@@ -1975,6 +2297,11 @@ function Dashboard() {
             onAvailabilityChange={(val) => setIsAvailable(val)}
             onDonationRecorded={(freshDonations) => setDonations(freshDonations)}
           />
+        )}
+
+        {/* ── Received Blood History — receivers ───────────────────────── */}
+        {activePanel === 'history' && isReceiver && (
+          <ReceivedBloodHistory requests={myRequests} />
         )}
 
         {/* Notifications */}
@@ -1997,15 +2324,33 @@ function Dashboard() {
                   {unreadCount > 0 ? `${unreadCount} unread` : 'All caught up'}
                 </p>
               </div>
-              {unreadCount > 0 && (
-                <button
-                  onClick={markAllAsRead}
-                  className="flex items-center gap-2 text-sm font-semibold text-red-600 hover:text-red-800 bg-red-50 hover:bg-red-100 px-4 py-2 rounded-xl transition-all"
-                >
-                  <FaCheckCircle className="text-base" />
-                  Mark all read
-                </button>
-              )}
+              <div className="flex items-center gap-2">
+                {/* Push notification toggle in notification panel */}
+                {pushSupported && (
+                  <button
+                    onClick={pushPermission === 'granted' ? undefined : requestPush}
+                    title={pushPermission === 'denied' ? 'Notifications blocked — change in browser settings' : pushPermission === 'granted' ? 'Browser alerts are ON' : 'Click to enable browser alerts'}
+                    className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-2 rounded-xl border transition ${
+                      pushPermission === 'granted'
+                        ? 'border-green-200 text-green-700 bg-green-50 cursor-default'
+                        : pushPermission === 'denied'
+                        ? 'border-gray-200 text-gray-400 cursor-not-allowed'
+                        : 'border-blue-200 text-blue-700 bg-blue-50 hover:bg-blue-100 cursor-pointer'
+                    }`}
+                  >
+                    {pushPermission === 'granted' ? '🔔 Push On' : pushPermission === 'denied' ? '🔕 Blocked' : '🔔 Enable Push'}
+                  </button>
+                )}
+                {unreadCount > 0 && (
+                  <button
+                    onClick={markAllAsRead}
+                    className="flex items-center gap-2 text-sm font-semibold text-red-600 hover:text-red-800 bg-red-50 hover:bg-red-100 px-4 py-2 rounded-xl transition-all"
+                  >
+                    <FaCheckCircle className="text-base" />
+                    Mark all read
+                  </button>
+                )}
+              </div>
             </div>
 
             {notifications.length > 0 ? (
@@ -2551,3 +2896,208 @@ function Dashboard() {
 }
 
 export default Dashboard;
+
+// ── ReceivedBloodHistory component ───────────────────────────────────────────
+function ReceivedBloodHistory({ requests }) {
+  const fulfilled = requests.filter(r =>
+    r.status === 'fulfilled' || r.status === 'completed'
+  );
+  const pending   = requests.filter(r => r.status === 'pending');
+  const cancelled = requests.filter(r => r.status === 'cancelled');
+
+  const URGENCY_COLOR = {
+    emergency: 'bg-red-100 text-red-700 border-red-200',
+    normal:    'bg-blue-50 text-blue-700 border-blue-200',
+  };
+
+  const STATUS_BADGE = {
+    fulfilled:  { label: 'Fulfilled',  cls: 'bg-green-100 text-green-700' },
+    completed:  { label: 'Completed',  cls: 'bg-green-100 text-green-700' },
+    pending:    { label: 'Pending',    cls: 'bg-yellow-100 text-yellow-700' },
+    accepted:   { label: 'Accepted',   cls: 'bg-blue-100 text-blue-700' },
+    cancelled:  { label: 'Cancelled',  cls: 'bg-gray-100 text-gray-500' },
+  };
+
+  const fmt = (d) =>
+    d ? new Date(d).toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+
+  return (
+    <div className="max-w-3xl space-y-6">
+
+      {/* Header */}
+      <div>
+        <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
+          <FaHistory className="text-red-500" />
+          Received Blood History
+        </h2>
+        <p className="text-sm text-gray-500 mt-1">
+          A complete record of all your blood requests and their outcomes
+        </p>
+      </div>
+
+      {/* Summary cards */}
+      <div className="grid grid-cols-3 gap-4">
+        {[
+          { label: 'Total Requests', value: requests.length,   color: 'text-gray-800',  bg: 'bg-gray-50',   border: 'border-gray-200', icon: '📋' },
+          { label: 'Fulfilled',      value: fulfilled.length,  color: 'text-green-700', bg: 'bg-green-50',  border: 'border-green-200', icon: '✅' },
+          { label: 'Pending',        value: pending.length,    color: 'text-yellow-700',bg: 'bg-yellow-50', border: 'border-yellow-200',icon: '⏳' },
+        ].map(s => (
+          <div key={s.label} className={`${s.bg} border ${s.border} rounded-2xl p-4 text-center`}>
+            <div className="text-2xl mb-1">{s.icon}</div>
+            <div className={`text-2xl font-extrabold ${s.color}`}>{s.value}</div>
+            <div className="text-xs text-gray-500 mt-0.5">{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Empty state */}
+      {requests.length === 0 && (
+        <div className="bg-white border border-gray-100 rounded-2xl p-12 text-center shadow-sm">
+          <div className="text-5xl mb-4">🩸</div>
+          <p className="text-gray-700 font-semibold text-lg">No blood requests yet</p>
+          <p className="text-gray-400 text-sm mt-1">
+            When you request blood, your history will appear here.
+          </p>
+        </div>
+      )}
+
+      {/* Request cards */}
+      {requests.length > 0 && (
+        <div className="space-y-4">
+          {[...requests]
+            .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+            .map((req, i) => {
+              const badge  = STATUS_BADGE[req.status] || STATUS_BADGE.pending;
+              const donor  = req.acceptedBy;
+              const isFulfilled = req.status === 'fulfilled' || req.status === 'completed';
+
+              return (
+                <div
+                  key={req._id}
+                  className={`bg-white rounded-2xl border shadow-sm overflow-hidden transition-all hover:shadow-md ${
+                    isFulfilled ? 'border-green-200' : req.status === 'cancelled' ? 'border-gray-200' : 'border-red-100'
+                  }`}
+                >
+                  {/* Top bar — blood group + status */}
+                  <div className={`flex items-center justify-between px-5 py-3 ${
+                    isFulfilled ? 'bg-green-50' : req.status === 'cancelled' ? 'bg-gray-50' : 'bg-red-50'
+                  }`}>
+                    <div className="flex items-center gap-3">
+                      {/* Serial */}
+                      <span className="text-xs font-bold text-gray-400">#{requests.length - i}</span>
+                      {/* Blood group pill */}
+                      <span className="bg-red-600 text-white font-extrabold text-sm px-3 py-0.5 rounded-full">
+                        {req.bloodGroup}
+                      </span>
+                      {/* Urgency */}
+                      <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full border ${
+                        URGENCY_COLOR[req.urgency] || URGENCY_COLOR.normal
+                      }`}>
+                        {req.urgency === 'emergency' ? '🚨 Emergency' : '📋 Normal'}
+                      </span>
+                    </div>
+                    {/* Status badge */}
+                    <span className={`text-xs font-bold px-3 py-1 rounded-full ${badge.cls}`}>
+                      {badge.label}
+                    </span>
+                  </div>
+
+                  {/* Body */}
+                  <div className="px-5 py-4 grid sm:grid-cols-2 gap-x-6 gap-y-2.5 text-sm">
+                    <div className="flex items-start gap-2">
+                      <span className="text-gray-400 mt-0.5">🏥</span>
+                      <div>
+                        <p className="text-xs text-gray-400">Hospital</p>
+                        <p className="font-semibold text-gray-800">{req.hospital || '—'}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-2">
+                      <span className="text-gray-400 mt-0.5">🩸</span>
+                      <div>
+                        <p className="text-xs text-gray-400">Units Requested</p>
+                        <p className="font-semibold text-gray-800">
+                          {req.units} unit{req.units > 1 ? 's' : ''}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-2">
+                      <span className="text-gray-400 mt-0.5">📅</span>
+                      <div>
+                        <p className="text-xs text-gray-400">Requested On</p>
+                        <p className="font-semibold text-gray-800">{fmt(req.createdAt)}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-2">
+                      <span className="text-gray-400 mt-0.5">📍</span>
+                      <div>
+                        <p className="text-xs text-gray-400">Location</p>
+                        <p className="font-semibold text-gray-800">{req.location || req.hospital || '—'}</p>
+                      </div>
+                    </div>
+
+                    {req.note && (
+                      <div className="sm:col-span-2 flex items-start gap-2">
+                        <span className="text-gray-400 mt-0.5">📝</span>
+                        <div>
+                          <p className="text-xs text-gray-400">Note</p>
+                          <p className="text-gray-700 italic">"{req.note}"</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Donor section — only if accepted/fulfilled */}
+                  {donor && (
+                    <div className="mx-5 mb-4 bg-green-50 border border-green-200 rounded-xl p-4">
+                      <p className="text-xs font-bold text-green-700 uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                        <FaHandHoldingHeart className="text-green-600" />
+                        {isFulfilled ? 'Blood Received From' : 'Accepted By'}
+                      </p>
+                      <div className="flex items-center justify-between gap-4 flex-wrap">
+                        <div className="flex items-center gap-3">
+                          <div className="w-9 h-9 rounded-full bg-green-600 flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
+                            {donor.username?.[0]?.toUpperCase() || '?'}
+                          </div>
+                          <div>
+                            <p className="font-semibold text-gray-800">{donor.username}</p>
+                            <p className="text-xs text-gray-500">{donor.email}</p>
+                          </div>
+                        </div>
+                        {donor.phone && (
+                          <a
+                            href={`tel:${donor.phone}`}
+                            className="flex items-center gap-2 bg-green-600 text-white text-xs font-bold px-4 py-2 rounded-xl hover:bg-green-700 transition"
+                          >
+                            <FaPhone className="text-xs" /> {donor.phone}
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* No donor yet for pending */}
+                  {!donor && req.status === 'pending' && (
+                    <div className="mx-5 mb-4 bg-yellow-50 border border-yellow-200 rounded-xl px-4 py-3 text-sm text-yellow-700 flex items-center gap-2">
+                      <span className="text-base">⏳</span>
+                      Waiting for a donor to accept this request…
+                    </div>
+                  )}
+
+                  {/* Cancelled notice */}
+                  {req.status === 'cancelled' && (
+                    <div className="mx-5 mb-4 bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 text-sm text-gray-500 flex items-center gap-2">
+                      <FaBan className="text-gray-400" />
+                      This request was cancelled.
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,7 +1,12 @@
 // src/pages/Home.jsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef, lazy, Suspense } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import api from '../services/api';
+// Leaflet is ~150 KB — lazy-load it so it doesn't block the initial page paint.
+// It only mounts when the user scrolls to the map section.
+const MapPicker = lazy(() => import('../components/MapPicker'));
+import { bloodGroups } from '../data/dummyData';
+import { useGeolocation, calculateDistance } from '../hooks/useGeolocation';
 import {
   FaHeartbeat,
   FaSearch,
@@ -18,6 +23,13 @@ import {
   FaPen,
   FaTimes,
   FaMapMarkerAlt,
+  FaCalendarAlt,
+  FaTint,
+  FaTrophy,
+  FaPlayCircle,
+  FaQuoteLeft,
+  FaRegSadTear,
+  FaImage,
 } from 'react-icons/fa';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
@@ -28,10 +40,18 @@ import { useAuth } from '../context/AuthContext';
 function Home() {
   const { user, logout } = useAuth();
 
-  const [scrollY, setScrollY] = useState(0);
+  // ── Parallax via refs — NO React state, NO re-renders on scroll ──────────
+  // Storing scrollY in state caused the entire 1500-line Home component to
+  // re-render on every scroll pixel (60+ times/second). Using refs + direct
+  // DOM mutation via requestAnimationFrame keeps the main thread free.
+  const parallaxBlob1Ref  = useRef(null);
+  const parallaxBlob2Ref  = useRef(null);
+  const parallaxBlob3Ref  = useRef(null);
+  const parallaxCardRef   = useRef(null);
   const [showAllEvents, setShowAllEvents] = useState(false);
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [selectedStep, setSelectedStep] = useState(null);
+
 
   // Community stories
   const [showShareModal, setShowShareModal] = useState(false);
@@ -44,26 +64,139 @@ function Home() {
 
   const navigate = useNavigate();
 
+  // Map section state
+  const [mapBloodGroup, setMapBloodGroup] = useState('');
+  const [mapMode, setMapMode] = useState('donors'); // 'donors' | 'hospitals' | 'requests'
+  const [realDonors, setRealDonors] = useState([]);
+  const [hospitals, setHospitals] = useState([]);
+  const [activeRequests, setActiveRequests] = useState([]);
+  const [mapLoading, setMapLoading] = useState(true);
+  const mapSectionRef = useRef(null);
+  const { location: mapUserLocation, loading: mapGpsLoading, getLocation: getMapLocation } = useGeolocation();
+
+  // ── Defer map API calls until the map section scrolls into view ─────────────
+  // These are 3 heavy API calls. Firing them on mount blocks the initial paint.
+  // IntersectionObserver triggers them only when the user reaches the map section.
+  useEffect(() => {
+    const el = document.getElementById('map-section');
+    if (!el) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting) return;
+        observer.disconnect();
+        setMapLoading(true);
+        Promise.all([
+          api.get('/api/blood/search-donors', { params: { available: 'true' } })
+            .then(r => r.data.donors || []).catch(() => []),
+          api.get('/api/auth/hospitals')
+            .then(r => r.data.hospitals || []).catch(() => []),
+          api.get('/api/blood/active-requests-map')
+            .then(r => r.data.requests || []).catch(() => []),
+        ]).then(([donorsData, hospitalsData, requestsData]) => {
+          setRealDonors(donorsData.filter(d => d.coordinates?.lat && d.coordinates?.lng));
+          setHospitals(hospitalsData);
+          setActiveRequests(requestsData);
+          setMapLoading(false);
+        });
+      },
+      { rootMargin: '300px' } // start loading 300px before the section enters view
+    );
+
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  // Donor markers — filter by blood group, optionally by GPS radius
+  const donorMarkers = useMemo(() => {
+    let list = realDonors;
+    if (mapBloodGroup) list = list.filter(d => d.bloodGroup === mapBloodGroup);
+    if (mapUserLocation) {
+      list = list
+        .map(d => ({ ...d, distance: calculateDistance(mapUserLocation.lat, mapUserLocation.lng, d.coordinates.lat, d.coordinates.lng) }))
+        .filter(d => d.distance <= 20)
+        .sort((a, b) => a.distance - b.distance);
+    }
+    return list.map(d => ({
+      id: d._id,
+      lat: d.coordinates.lat,
+      lng: d.coordinates.lng,
+      bloodGroup: d.bloodGroup,
+      label: d.username,
+      subLabel: d.location || d.address || '',
+      phone: d.phone,
+      lastDonation: d.lastDonation ? new Date(d.lastDonation).toLocaleDateString() : null,
+      distance: d.distance ?? null,
+    }));
+  }, [realDonors, mapBloodGroup, mapUserLocation]);
+
+  // Hospital markers — with distance if user location is known
+  const hospitalMarkers = useMemo(() => hospitals.map(h => {
+    const distance = mapUserLocation
+      ? calculateDistance(mapUserLocation.lat, mapUserLocation.lng, h.coordinates.lat, h.coordinates.lng)
+      : null;
+    return {
+      id: h._id,
+      lat: h.coordinates.lat,
+      lng: h.coordinates.lng,
+      type: 'hospital',
+      label: h.hospitalName || h.username,
+      subLabel: h.location || h.address || '',
+      phone: h.phone,
+      distance,
+    };
+  }).sort((a, b) => (a.distance ?? 999) - (b.distance ?? 999)), [hospitals, mapUserLocation]);
+
+  // Blood request markers — pulsing pins for active pending/accepted requests
+  const requestMarkers = useMemo(() => {
+    let list = activeRequests;
+    if (mapBloodGroup) list = list.filter(r => r.bloodGroup === mapBloodGroup);
+    return list.map(r => ({
+      id: r._id,
+      lat: r.coordinates.lat,
+      lng: r.coordinates.lng,
+      type: 'request',
+      bloodGroup: r.bloodGroup,
+      label: `${r.bloodGroup} needed — ${r.units} unit${r.units > 1 ? 's' : ''}`,
+      subLabel: r.hospital || r.location || '',
+      phone: r.contactPhone,
+      units: r.units,
+      urgency: r.urgency,
+      isEmergency: r.urgency === 'emergency',
+      distance: mapUserLocation
+        ? calculateDistance(mapUserLocation.lat, mapUserLocation.lng, r.coordinates.lat, r.coordinates.lng)
+        : null,
+    }));
+  }, [activeRequests, mapBloodGroup, mapUserLocation]);
+
+  const mapMarkers = mapMode === 'donors' ? donorMarkers : mapMode === 'hospitals' ? hospitalMarkers : requestMarkers;
+
   const [statsRef, statsVisible] = useScrollAnimation({ threshold: 0.2 });
   const [howItWorksRef, howItWorksVisible] = useScrollAnimation({ threshold: 0.1 });
   const [testimonialsRef, testimonialsVisible] = useScrollAnimation({ threshold: 0.1 });
   const [pastEventsRef, pastEventsVisible] = useScrollAnimation({ threshold: 0.1 });
   const [ctaRef, ctaVisible] = useScrollAnimation({ threshold: 0.2 });
 
-  // Live past events from API
+  // Live past events — deferred after first paint so hero section loads instantly
   const [livePastEvents, setLivePastEvents] = useState([]);
   useEffect(() => {
-    axios.get('/api/events/past')
-      .then(res => { if (res.data.success) setLivePastEvents(res.data.events || []); })
-      .catch(() => {}); // silently fall back to static data
+    const id = setTimeout(() => {
+      api.get('/api/events/past')
+        .then(res => { if (res.data.success) setLivePastEvents(res.data.events || []); })
+        .catch(() => {});
+    }, 300); // yield to browser paint first
+    return () => clearTimeout(id);
   }, []);
 
-  // Real platform stats from DB
+  // Real platform stats — deferred; stats section is below the fold anyway
   const [realStats, setRealStats] = useState({ donors: 0, hospitals: 0, donations: 0, responseTime: 0, monthlyRequests: 0, successRate: 0 });
   useEffect(() => {
-    axios.get('/api/blood/stats')
-      .then(res => { if (res.data.success) setRealStats(res.data.stats); })
-      .catch(() => {});
+    const id = setTimeout(() => {
+      api.get('/api/blood/stats')
+        .then(res => { if (res.data.success) setRealStats(res.data.stats); })
+        .catch(() => {});
+    }, 100);
+    return () => clearTimeout(id);
   }, []);
 
   const donorsCount    = useCounter(realStats.donors,       2000, statsVisible);
@@ -71,16 +204,38 @@ function Home() {
   const responseTime   = useCounter(realStats.responseTime, 1500, statsVisible);
 
   useEffect(() => {
-    const handleScroll = () => setScrollY(window.scrollY);
-    window.addEventListener('scroll', handleScroll);
-    return () => window.removeEventListener('scroll', handleScroll);
+    let rafId;
+    const handleScroll = () => {
+      // Cancel any pending frame so we never queue more than one at a time
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        const sy = window.scrollY;
+        if (parallaxBlob1Ref.current)
+          parallaxBlob1Ref.current.style.transform = `translateY(${sy * 0.3}px)`;
+        if (parallaxBlob2Ref.current)
+          parallaxBlob2Ref.current.style.transform = `translateY(${sy * 0.2}px)`;
+        if (parallaxBlob3Ref.current)
+          parallaxBlob3Ref.current.style.transform = `translate(${sy * 0.1}px, ${sy * 0.15}px)`;
+        if (parallaxCardRef.current)
+          parallaxCardRef.current.style.transform = `translateY(${sy * 0.1}px)`;
+      });
+    };
+    // passive: true lets the browser scroll without waiting for this handler
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+      cancelAnimationFrame(rafId);
+    };
   }, []);
 
-  // Fetch community stories on mount
+  // Fetch community stories — deferred; stories section is below the fold
   useEffect(() => {
-    axios.get('/api/stories')
-      .then(res => { if (res.data.success) setCommunityStories(res.data.stories); })
-      .catch(() => {});
+    const id = setTimeout(() => {
+      api.get('/api/stories')
+        .then(res => { if (res.data.success) setCommunityStories(res.data.stories); })
+        .catch(() => {});
+    }, 500);
+    return () => clearTimeout(id);
   }, []);
 
   const handleShareStory = async (e) => {
@@ -92,7 +247,7 @@ function Home() {
     }
     setSubmitting(true);
     try {
-      const res = await axios.post('/api/stories', storyForm);
+      const res = await api.post('/api/stories', storyForm);
       if (res.data.success) {
         const updated = res.data.story;
         setCommunityStories(prev => {
@@ -231,6 +386,11 @@ function Home() {
         title: ev.title,
         desc: ev.unitsCollected ? `${ev.unitsCollected} units collected` : ev.description,
         date: new Date(ev.date).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+        rawDate: ev.date,
+        hospitalName: ev.hospitalName || '',
+        bloodGroupsNeeded: ev.bloodGroupsNeeded || [],
+        unitsRaw: Number(ev.unitsCollected) || 0,
+        donorsRaw: Number(ev.totalDonors) || (ev.rsvps?.filter(r => r.status === 'attending').length || 0),
         location: ev.location,
         story: ev.story || ev.description || 'A successful blood donation event organized by our hospital network.',
         quote: ev.quote || '',
@@ -243,7 +403,41 @@ function Home() {
         },
         videoUrl: null,
       }))
-    : pastEvents;
+    : pastEvents.map(p => ({
+        ...p,
+        rawDate: p.date,
+        hospitalName: p.hospitalName || '',
+        bloodGroupsNeeded: p.bloodGroupsNeeded || [],
+        unitsRaw: typeof p.stats?.units === 'string' ? Number(p.stats.units.replace(/[^0-9]/g, '')) || 0 : 0,
+        donorsRaw: typeof p.stats?.donors === 'string' ? Number(p.stats.donors.replace(/[^0-9]/g, '')) || 0 : 0,
+      }));
+
+  // Find the most-impactful event (highest units) for the "Featured" badge
+  const topEventIdx = displayedEvents.reduce(
+    (best, ev, i) => (ev.unitsRaw > (displayedEvents[best]?.unitsRaw || 0) ? i : best),
+    0
+  );
+
+  const sortedFilteredEvents = displayedEvents.map((ev, i) => ({
+    ...ev,
+    _isFeatured: i === topEventIdx && ev.unitsRaw > 0,
+  }));
+
+  // Relative date helper (e.g. "3 weeks ago")
+  const relativeDate = (dateStr) => {
+    if (!dateStr) return '';
+    const d = new Date(dateStr);
+    if (isNaN(d)) return '';
+    const diffMs = Date.now() - d.getTime();
+    const days = Math.floor(diffMs / 86400000);
+    if (days < 0) return 'soon';
+    if (days < 1) return 'today';
+    if (days < 2) return 'yesterday';
+    if (days < 7) return `${days} days ago`;
+    if (days < 30) return `${Math.floor(days / 7)} week${days >= 14 ? 's' : ''} ago`;
+    if (days < 365) return `${Math.floor(days / 30)} month${days >= 60 ? 's' : ''} ago`;
+    return `${Math.floor(days / 365)} year${days >= 730 ? 's' : ''} ago`;
+  };
 
   const howItWorksSteps = [
     {
@@ -281,16 +475,16 @@ function Home() {
         <section className="relative overflow-hidden min-h-[90vh] flex items-center">
           <div className="absolute inset-0 pointer-events-none overflow-hidden">
             <div
+              ref={parallaxBlob1Ref}
               className="absolute -top-40 -right-40 w-80 h-80 bg-red-200 rounded-full blur-3xl opacity-60 animate-float-slow"
-              style={{ transform: `translateY(${scrollY * 0.3}px)` }}
             />
             <div
+              ref={parallaxBlob2Ref}
               className="absolute bottom-0 -left-20 w-72 h-72 bg-rose-100 rounded-full blur-3xl opacity-40 animate-float"
-              style={{ transform: `translateY(${scrollY * 0.2}px)` }}
             />
             <div
+              ref={parallaxBlob3Ref}
               className="absolute top-1/2 left-1/2 w-96 h-96 bg-red-100 rounded-full blur-3xl opacity-30 animate-float-slow"
-              style={{ transform: `translate(${scrollY * 0.1}px, ${scrollY * 0.15}px)` }}
             />
             {[...Array(6)].map((_, i) => (
               <div
@@ -371,8 +565,8 @@ function Home() {
 
               <div className="relative lg:block animate-fade-up-delayed">
                 <div
+                  ref={parallaxCardRef}
                   className="relative bg-white rounded-3xl shadow-2xl border border-red-200 p-6 md:p-8 max-w-md mx-auto animate-float hover:scale-105 transition-transform duration-300"
-                  style={{ transform: `translateY(${scrollY * 0.1}px)` }}
                 >
                   <div className="flex items-center justify-between mb-4">
                     <div>
@@ -781,71 +975,150 @@ function Home() {
           </div>
         </section>
 
-        {/* Past Donation Events Section */}
-        <section id="past-events" ref={pastEventsRef} className="py-16 md:py-24 bg-gradient-to-b from-red-50 to-white">
-          <div className="container mx-auto px-4">
+        {/* Past Donation Events Section — Advanced */}
+        <section id="past-events" ref={pastEventsRef} className="py-16 md:py-24 bg-gradient-to-b from-red-50 via-rose-50/40 to-white relative overflow-hidden">
+          {/* Decorative background blobs */}
+          <div className="absolute top-20 -left-20 w-80 h-80 bg-red-200/30 rounded-full blur-3xl pointer-events-none" />
+          <div className="absolute bottom-20 -right-20 w-96 h-96 bg-rose-200/30 rounded-full blur-3xl pointer-events-none" />
+
+          <div className="container mx-auto px-4 relative">
+            {/* Heading */}
             <div
-              className={`text-center mb-12 transition-all duration-1000 ${pastEventsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}
+              className={`text-center mb-10 transition-all duration-1000 ${pastEventsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}
             >
+              <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-red-100 text-red-700 text-xs font-bold uppercase tracking-wider mb-4">
+                <FaTrophy /> Our Impact Stories
+              </span>
               <h2 className="text-4xl md:text-5xl font-extrabold text-gray-900 mb-4">Past Donation Events</h2>
               <p className="text-xl text-gray-600 max-w-3xl mx-auto">
                 Celebrating successful blood donation campaigns that brought our community together to save lives.
               </p>
             </div>
 
-            <div
-              className={`grid grid-cols-1 md:grid-cols-3 gap-8 max-w-6xl mx-auto transition-all duration-1000 ${pastEventsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}
-            >
-              {displayedEvents.slice(0, showAllEvents ? displayedEvents.length : 3).map((event, idx) => (
-                <div
-                  key={idx}
-                  onClick={() => setSelectedEvent(event)}
-                  className="group relative cursor-pointer overflow-hidden rounded-3xl shadow-xl border border-red-100 hover:shadow-2xl transition-all duration-500 hover:-translate-y-3"
-                >
-                  {event.videoUrl ? (
-                    <div className="aspect-video">
-                      <iframe
-                        width="100%"
-                        height="100%"
-                        src={event.videoUrl}
-                        title={event.title}
-                        frameBorder="0"
-                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                        allowFullScreen
-                        className="group-hover:scale-105 transition-transform duration-700"
-                      ></iframe>
-                    </div>
-                  ) : (
-                    <img
-                      src={event.src}
-                      alt={event.alt}
-                      className="w-full h-80 object-cover group-hover:scale-110 transition-transform duration-700"
-                    />
-                  )}
+            {/* Events Grid */}
+            {sortedFilteredEvents.length === 0 ? (
+              <div className="max-w-md mx-auto text-center py-16">
+                <FaRegSadTear className="text-5xl text-red-200 mx-auto mb-4" />
+                <p className="text-gray-700 font-semibold">No events yet</p>
+                <p className="text-sm text-gray-500 mt-1">
+                  Past events will appear here once hospitals complete their drives.
+                </p>
+              </div>
+            ) : (
+              <div
+                className={`grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-7 max-w-6xl mx-auto transition-all duration-1000 ${pastEventsVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10'}`}
+              >
+                {sortedFilteredEvents.slice(0, showAllEvents ? sortedFilteredEvents.length : 3).map((event, idx) => (
+                  <article
+                    key={idx}
+                    onClick={() => setSelectedEvent(event)}
+                    className="group relative cursor-pointer overflow-hidden rounded-3xl bg-white shadow-md border border-red-100 hover:shadow-2xl hover:border-red-200 transition-all duration-500 hover:-translate-y-2 flex flex-col"
+                  >
+                    {/* Media */}
+                    <div className="relative h-56 overflow-hidden bg-gray-100">
+                      {event.videoUrl ? (
+                        <iframe
+                          width="100%"
+                          height="100%"
+                          src={event.videoUrl}
+                          title={event.title}
+                          frameBorder="0"
+                          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                          allowFullScreen
+                          className="w-full h-full"
+                        />
+                      ) : (
+                        <img
+                          src={event.src}
+                          alt={event.alt}
+                          loading="lazy"
+                          className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700"
+                        />
+                      )}
+                      <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/10 to-transparent pointer-events-none" />
 
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent flex items-end p-6">
-                    <div className="w-full">
-                      <p className="text-white font-bold text-lg">{event.title}</p>
-                      <p className="text-white/80 text-sm">{event.desc}</p>
-                      <p className="text-white/60 text-xs mt-1 flex items-center gap-1">
-                        <FaMapMarkerAlt className="text-red-400" /> {event.location} &nbsp;·&nbsp; {event.date}
-                      </p>
-                    </div>
-                    <span className="absolute top-4 right-4 bg-white/20 backdrop-blur-sm text-white text-xs font-semibold px-3 py-1 rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                      View Story →
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
+                      {/* Featured badge */}
+                      {event._isFeatured && (
+                        <span className="absolute top-3 left-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-yellow-400 text-yellow-900 text-[11px] font-extrabold shadow-lg">
+                          <FaTrophy className="text-[10px]" /> Featured
+                        </span>
+                      )}
 
-            {displayedEvents.length > 3 && (
+                      {/* Content type indicator */}
+                      <span className="absolute top-3 right-3 w-9 h-9 rounded-full bg-white/90 backdrop-blur-sm text-red-600 flex items-center justify-center shadow-md">
+                        {event.videoUrl ? <FaPlayCircle /> : <FaImage className="text-sm" />}
+                      </span>
+
+                      {/* Date pill */}
+                      <span className="absolute bottom-3 left-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/95 text-gray-800 text-[11px] font-bold shadow-md">
+                        <FaCalendarAlt className="text-red-500 text-[10px]" />
+                        {event.date}
+                      </span>
+
+                      {/* Hover overlay */}
+                      <span className="absolute bottom-3 right-3 inline-flex items-center gap-1 bg-red-600 text-white text-[11px] font-bold px-3 py-1 rounded-full shadow-lg opacity-0 group-hover:opacity-100 translate-y-1 group-hover:translate-y-0 transition-all duration-300">
+                        Read Story <FaArrowRight className="text-[9px]" />
+                      </span>
+                    </div>
+
+                    {/* Body */}
+                    <div className="p-5 flex-1 flex flex-col">
+                      <h3 className="text-lg font-extrabold text-gray-900 leading-tight line-clamp-2 group-hover:text-red-700 transition-colors">
+                        {event.title}
+                      </h3>
+
+                      <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+                        <FaMapMarkerAlt className="text-red-400 flex-shrink-0" />
+                        <span className="truncate">{event.location}</span>
+                        {event.rawDate && (
+                          <>
+                            <span className="text-gray-300">·</span>
+                            <span className="whitespace-nowrap">{relativeDate(event.rawDate)}</span>
+                          </>
+                        )}
+                      </div>
+
+                      {event.hospitalName && (
+                        <p className="mt-1.5 text-xs text-gray-500 flex items-center gap-1.5">
+                          <FaHospitalAlt className="text-red-400" /> {event.hospitalName}
+                        </p>
+                      )}
+
+                      {event.story && (
+                        <p className="mt-3 text-sm text-gray-600 line-clamp-2 leading-relaxed">{event.story}</p>
+                      )}
+
+                      {/* Stat strip */}
+                      <div className="mt-auto pt-4 grid grid-cols-2 gap-2">
+                        <div className="rounded-xl bg-red-50 border border-red-100 px-3 py-2 flex items-center gap-2">
+                          <FaTint className="text-red-500 flex-shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-base font-extrabold text-red-700 leading-none">{event.stats?.units || '—'}</p>
+                            <p className="text-[10px] text-gray-500 font-semibold uppercase mt-0.5">Units</p>
+                          </div>
+                        </div>
+                        <div className="rounded-xl bg-rose-50 border border-rose-100 px-3 py-2 flex items-center gap-2">
+                          <FaUsers className="text-rose-500 flex-shrink-0" />
+                          <div className="min-w-0">
+                            <p className="text-base font-extrabold text-rose-700 leading-none">{event.stats?.donors || '—'}</p>
+                            <p className="text-[10px] text-gray-500 font-semibold uppercase mt-0.5">Donors</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+
+            {/* View All / Less */}
+            {sortedFilteredEvents.length > 3 && (
               <div className="text-center mt-10">
                 <button
                   onClick={() => setShowAllEvents(!showAllEvents)}
-                  className="inline-flex items-center gap-2 px-6 py-3 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition-all hover:shadow-lg"
+                  className="inline-flex items-center gap-2 px-7 py-3.5 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition-all hover:shadow-xl hover:scale-105"
                 >
-                  {showAllEvents ? 'View Less' : 'View All Events'}
+                  {showAllEvents ? 'View Less' : `View All ${sortedFilteredEvents.length} Events`}
                   {showAllEvents ? <FaArrowUp /> : <FaArrowRight />}
                 </button>
               </div>
@@ -860,60 +1133,98 @@ function Home() {
             onClick={() => setSelectedEvent(null)}
           >
             <div
-              className="bg-white rounded-3xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl animate-scale-in"
+              className="bg-white rounded-3xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl animate-scale-in relative"
               onClick={e => e.stopPropagation()}
             >
+              {/* Close X */}
+              <button
+                onClick={() => setSelectedEvent(null)}
+                className="absolute top-4 right-4 z-10 w-9 h-9 rounded-full bg-white/90 hover:bg-white text-gray-700 shadow-md flex items-center justify-center transition"
+                aria-label="Close"
+              >
+                <FaTimes />
+              </button>
+
               {/* Hero Image */}
               <div className="relative">
                 <img
                   src={selectedEvent.src}
                   alt={selectedEvent.alt}
-                  className="w-full h-64 object-cover rounded-t-3xl"
+                  className="w-full h-72 object-cover rounded-t-3xl"
                 />
-                <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent rounded-t-3xl flex items-end p-6">
-                  <div>
-                    <h3 className="text-2xl font-extrabold text-white">{selectedEvent.title}</h3>
-                    <p className="text-white/80 text-sm flex items-center gap-2 mt-1">
-                      <FaMapMarkerAlt className="text-red-400" /> {selectedEvent.location} &nbsp;·&nbsp; {selectedEvent.date}
-                    </p>
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent rounded-t-3xl flex items-end p-6">
+                  <div className="w-full">
+                    {selectedEvent._isFeatured && (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-yellow-400 text-yellow-900 text-[11px] font-extrabold mb-2">
+                        <FaTrophy className="text-[10px]" /> Featured Event
+                      </span>
+                    )}
+                    <h3 className="text-2xl md:text-3xl font-extrabold text-white leading-tight">{selectedEvent.title}</h3>
+                    <div className="text-white/85 text-sm flex flex-wrap items-center gap-x-4 gap-y-1 mt-2">
+                      <span className="flex items-center gap-1.5">
+                        <FaMapMarkerAlt className="text-red-300" /> {selectedEvent.location}
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <FaCalendarAlt className="text-red-300" /> {selectedEvent.date}
+                      </span>
+                      {selectedEvent.hospitalName && (
+                        <span className="flex items-center gap-1.5">
+                          <FaHospitalAlt className="text-red-300" /> {selectedEvent.hospitalName}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
 
               <div className="p-6 md:p-8">
+                {/* Blood groups needed */}
+                {selectedEvent.bloodGroupsNeeded?.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2 mb-5">
+                    <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Blood Groups:</span>
+                    {selectedEvent.bloodGroupsNeeded.map(g => (
+                      <span key={g} className="px-2.5 py-0.5 rounded-md bg-red-100 text-red-700 text-xs font-bold">
+                        {g}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
                 {/* Impact Stats */}
-                <div className="grid grid-cols-4 gap-3 mb-6">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
                   {[
-                    { label: 'Units', value: selectedEvent.stats.units },
-                    { label: 'Donors', value: selectedEvent.stats.donors },
-                    { label: 'Cities', value: selectedEvent.stats.cities },
-                    { label: 'Hospitals', value: selectedEvent.stats.hospitals },
-                  ].map((s, i) => (
-                    <div key={i} className="bg-red-50 border border-red-100 rounded-2xl p-3 text-center">
-                      <p className="text-lg font-extrabold text-red-600">{s.value}</p>
-                      <p className="text-xs text-gray-500 font-medium">{s.label}</p>
-                    </div>
-                  ))}
+                    { label: 'Units', value: selectedEvent.stats.units, icon: FaTint },
+                    { label: 'Donors', value: selectedEvent.stats.donors, icon: FaUsers },
+                    { label: 'Cities', value: selectedEvent.stats.cities, icon: FaMapMarkerAlt },
+                    { label: 'Hospitals', value: selectedEvent.stats.hospitals, icon: FaHospitalAlt },
+                  ].map((s, i) => {
+                    const Icon = s.icon;
+                    return (
+                      <div key={i} className="bg-gradient-to-br from-red-50 to-rose-50 border border-red-100 rounded-2xl p-3 text-center">
+                        <Icon className="text-red-500 mx-auto mb-1" />
+                        <p className="text-lg font-extrabold text-red-600 leading-tight">{s.value}</p>
+                        <p className="text-[11px] text-gray-500 font-semibold uppercase">{s.label}</p>
+                      </div>
+                    );
+                  })}
                 </div>
 
                 {/* Story */}
-                <p className="text-gray-700 text-base leading-relaxed mb-6">{selectedEvent.story}</p>
+                {selectedEvent.story && (
+                  <p className="text-gray-700 text-base leading-relaxed mb-6">{selectedEvent.story}</p>
+                )}
 
                 {/* Quote */}
-                <div className="bg-gradient-to-br from-red-50 to-rose-50 border-l-4 border-red-500 rounded-xl p-5 mb-6">
-                  <p className="text-gray-800 italic text-sm leading-relaxed">"{selectedEvent.quote}"</p>
-                  <p className="text-red-600 font-semibold text-xs mt-2">— {selectedEvent.quoteName}</p>
-                </div>
+                {selectedEvent.quote && (
+                  <div className="relative bg-gradient-to-br from-red-50 to-rose-50 border-l-4 border-red-500 rounded-xl p-5 pl-12 mb-6">
+                    <FaQuoteLeft className="absolute top-4 left-4 text-red-300 text-xl" />
+                    <p className="text-gray-800 italic text-sm leading-relaxed">{selectedEvent.quote}</p>
+                    {selectedEvent.quoteName && (
+                      <p className="text-red-600 font-semibold text-xs mt-2">— {selectedEvent.quoteName}</p>
+                    )}
+                  </div>
+                )}
 
-                {/* Close */}
-                <div className="text-center">
-                  <button
-                    onClick={() => setSelectedEvent(null)}
-                    className="px-8 py-3 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition shadow-md"
-                  >
-                    Close
-                  </button>
-                </div>
               </div>
             </div>
           </div>
@@ -1035,43 +1346,192 @@ function Home() {
           </div>
         </section>
 
-        {/* Map Section */}
-        <section id="map-section" className="py-16 md:py-24 bg-red-50">
+        {/* Map Section — OpenStreetMap */}
+        <section id="map-section" className="py-16 md:py-24 bg-gradient-to-b from-white to-red-50">
           <div className="container mx-auto px-4">
-            <div className="text-center mb-12">
+
+            {/* Heading */}
+            <div className="text-center mb-10">
+              <span className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-red-100 text-red-700 text-xs font-bold uppercase tracking-wider mb-4">
+                <FaMapMarkerAlt /> Live Map
+              </span>
               <h2 className="text-4xl md:text-5xl font-extrabold text-gray-900 mb-4">
-                Find Nearby Donors & Hospitals
+                Find Donors & Hospitals Near You
               </h2>
-              <p className="text-xl text-gray-600 max-w-3xl mx-auto">
-                Locate blood resources instantly across your city. Our interactive map shows active donors and partner hospitals in real-time.
+              <p className="text-xl text-gray-500 max-w-2xl mx-auto">
+                Real registered donors and hospitals — powered by OpenStreetMap. Click any pin to call directly.
               </p>
             </div>
 
-            <div className="relative max-w-6xl mx-auto rounded-3xl overflow-hidden shadow-2xl">
-              <div className="w-full h-96 md:h-[600px]">
-                <iframe
-                  title="BloodBridge Network Map"
-                  src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d317718.093586738!2d144.755927!3d-37.82222!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x6ad65d43f6e3e6d9%3A0x5045675218ce6e0!2sMelbourne%20VIC%2C%20Australia!5e0!3m2!1sen!2sus!4v1699000000000"
-                  width="100%"
-                  height="100%"
-                  style={{ border: 0 }}
-                  allowFullScreen=""
-                  loading="lazy"
-                  referrerPolicy="no-referrer-when-downgrade"
-                  className="rounded-3xl"
-                />
+            {/* Controls bar */}
+            <div className="max-w-5xl mx-auto mb-6 flex flex-wrap gap-3 items-center justify-between bg-white border border-red-100 rounded-2xl px-5 py-4 shadow-md">
+
+              {/* Mode toggle: Donors / Hospitals / Requests */}
+              <div className="flex bg-gray-100 rounded-xl p-1 gap-1">
+                <button
+                  onClick={() => setMapMode('donors')}
+                  className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${mapMode === 'donors' ? 'bg-red-600 text-white shadow' : 'text-gray-600 hover:text-gray-800'}`}
+                >
+                  🩸 Donors
+                </button>
+                <button
+                  onClick={() => setMapMode('hospitals')}
+                  className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all ${mapMode === 'hospitals' ? 'bg-red-600 text-white shadow' : 'text-gray-600 hover:text-gray-800'}`}
+                >
+                  🏥 Hospitals
+                </button>
+                <button
+                  onClick={() => setMapMode('requests')}
+                  className={`px-4 py-1.5 rounded-lg text-sm font-bold transition-all relative ${mapMode === 'requests' ? 'bg-red-600 text-white shadow' : 'text-gray-600 hover:text-gray-800'}`}
+                >
+                  🚨 Requests
+                  {activeRequests.length > 0 && (
+                    <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[9px] font-black rounded-full w-4 h-4 flex items-center justify-center border-2 border-white">
+                      {activeRequests.length > 9 ? '9+' : activeRequests.length}
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {/* Blood group filter (donors + requests) */}
+              {(mapMode === 'donors' || mapMode === 'requests') && (
+                <div className="flex flex-wrap gap-2 items-center">
+                  <span className="text-sm font-semibold text-gray-600 mr-1">Blood:</span>
+                  <button
+                    onClick={() => setMapBloodGroup('')}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-all ${mapBloodGroup === '' ? 'bg-red-600 text-white shadow' : 'bg-gray-100 text-gray-600 hover:bg-red-50'}`}
+                  >
+                    All
+                  </button>
+                  {['O+','O-','A+','A-','B+','B-','AB+','AB-'].map(bg => (
+                    <button
+                      key={bg}
+                      onClick={() => setMapBloodGroup(bg === mapBloodGroup ? '' : bg)}
+                      className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-all ${mapBloodGroup === bg ? 'bg-red-600 text-white shadow' : 'bg-gray-100 text-gray-600 hover:bg-red-50'}`}
+                    >
+                      {bg}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Near Me button */}
+              <button
+                onClick={getMapLocation}
+                disabled={mapGpsLoading}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-semibold rounded-xl transition-all shadow disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                <FaMapMarkerAlt />
+                {mapGpsLoading ? 'Locating...' : 'Near Me'}
+              </button>
+            </div>
+
+            {/* Map + sidebar */}
+            <div className="max-w-5xl mx-auto flex flex-col lg:flex-row gap-5">
+
+              {/* Map */}
+              <div className="flex-1 rounded-2xl overflow-hidden shadow-2xl border border-red-100 relative">
+                {mapLoading && (
+                  <div className="absolute inset-0 z-10 bg-white/80 flex items-center justify-center rounded-2xl">
+                    <div className="flex flex-col items-center gap-3">
+                      <div className="w-8 h-8 border-4 border-red-200 border-t-red-600 rounded-full animate-spin" />
+                      <p className="text-sm text-gray-500 font-medium">Loading real data…</p>
+                    </div>
+                  </div>
+                )}
+                <Suspense fallback={
+                  <div className="w-full h-[500px] flex items-center justify-center bg-red-50">
+                    <div className="w-8 h-8 border-4 border-red-200 border-t-red-600 rounded-full animate-spin" />
+                  </div>
+                }>
+                  <MapPicker
+                    height="500px"
+                    center={mapUserLocation ? [mapUserLocation.lat, mapUserLocation.lng] : [27.7172, 85.3240]}
+                    zoom={mapUserLocation ? 13 : 12}
+                    markers={mapMarkers}
+                    userLocation={mapUserLocation}
+                    radiusKm={mapMode === 'donors' && mapUserLocation ? 20 : null}
+                    markerType={mapMode}
+                    flyTo={mapUserLocation ? { lat: mapUserLocation.lat, lng: mapUserLocation.lng } : null}
+                    flyZoom={13}
+                    fitMarkers={!mapUserLocation && mapMarkers.length > 1}
+                    readOnly
+                  />
+                </Suspense>
+              </div>
+
+              {/* Sidebar */}
+              <div className="lg:w-64 flex flex-col gap-4">
+
+                {/* Stats card */}
+                <div className="bg-white border border-red-100 rounded-2xl p-5 shadow-md">
+                  <h4 className="text-sm font-bold text-gray-500 uppercase tracking-wide mb-4">Map Stats</h4>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-600 flex items-center gap-2">
+                        <span className={`w-3 h-3 rounded-full inline-block ${mapMode === 'donors' ? 'bg-red-500' : mapMode === 'hospitals' ? 'bg-purple-600' : 'bg-orange-500'}`} />
+                        {mapMode === 'donors' ? 'Donors shown' : mapMode === 'hospitals' ? 'Hospitals shown' : 'Active requests'}
+                      </span>
+                      <span className="font-extrabold text-gray-900">{mapLoading ? '…' : mapMarkers.length}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-600 flex items-center gap-2">
+                        <span className="w-3 h-3 rounded-full bg-blue-500 inline-block" /> Your location
+                      </span>
+                      <span className="font-extrabold text-gray-900">{mapUserLocation ? '✅' : '—'}</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-600">Blood group</span>
+                      <span className="font-extrabold text-red-600">{mapBloodGroup || 'All'}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Legend */}
+                <div className="bg-white border border-red-100 rounded-2xl p-5 shadow-md">
+                  <h4 className="text-sm font-bold text-gray-500 uppercase tracking-wide mb-3">Legend</h4>
+                  <div className="space-y-2">
+                    {(mapMode === 'donors' ? [
+                      { color: '#dc2626', label: 'O± donors' },
+                      { color: '#2563eb', label: 'A± donors' },
+                      { color: '#16a34a', label: 'B± donors' },
+                      { color: '#7c3aed', label: 'AB± donors' },
+                      { color: '#2563eb', label: 'You are here', dot: true },
+                    ] : mapMode === 'hospitals' ? [
+                      { color: '#7c3aed', label: 'Hospital' },
+                      { color: '#2563eb', label: 'You are here', dot: true },
+                    ] : [
+                      { color: '#dc2626', label: 'Normal request' },
+                      { color: '#dc2626', label: '🚨 Emergency', pulse: true },
+                      { color: '#2563eb', label: 'You are here', dot: true },
+                    ]).map(({ color, label, dot }) => (
+                      <div key={label} className="flex items-center gap-2 text-sm text-gray-600">
+                        <span
+                          className="inline-block flex-shrink-0"
+                          style={{
+                            width: 12, height: 12,
+                            borderRadius: '50%',
+                            background: color,
+                            border: dot ? '2px solid white' : 'none',
+                            boxShadow: dot ? '0 0 0 3px rgba(37,99,235,0.3)' : 'none',
+                          }}
+                        />
+                        {label}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* CTA */}
+                <Link
+                  to="/search-donors"
+                  className="flex items-center justify-center gap-2 py-3 px-4 bg-red-600 hover:bg-red-700 text-white font-semibold rounded-2xl shadow transition-all hover:shadow-lg text-sm"
+                >
+                  <FaSearch /> Full Donor Search
+                </Link>
               </div>
             </div>
 
-            <div className="text-center mt-8">
-              <Link
-                to="/search-donors"
-                className="inline-flex items-center gap-2 px-6 py-3 bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition-all hover:shadow-lg"
-              >
-                <FaSearch />
-                Search Donors by Location
-              </Link>
-            </div>
           </div>
         </section>
 

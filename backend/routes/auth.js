@@ -3,6 +3,7 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs'; // ← added for folder creation
+import { cacheMiddleware } from '../config/cache.js';
 import {
   signupUser,
   loginUser,
@@ -14,6 +15,7 @@ import {
   verifyEmail,
   resendVerificationCode,
   setPassword,
+  getHospitals,
 } from '../controllers/authController.js';
 import { protect } from '../middleware/authMiddleware.js';
 
@@ -92,5 +94,9 @@ router.post('/set-password', protect, setPassword);
 
 // ── Google OAuth ─────────────────────────────────────────────────────────
 router.post('/google', googleLogin);
+
+// ── Public: hospitals with coordinates (for Home page map) ──────────────
+// Cache for 2 minutes — hospital list changes rarely
+router.get('/hospitals', cacheMiddleware('hospitals_list', 120), getHospitals);
 
 export default router;

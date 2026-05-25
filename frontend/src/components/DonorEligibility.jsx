@@ -1,6 +1,6 @@
 // src/components/DonorEligibility.jsx
 import { useState, useEffect } from 'react';
-import axios from 'axios';
+import api from '../services/api';
 import {
   FaTint,
   FaCalendarAlt,
@@ -134,7 +134,7 @@ export default function DonorEligibility({ user, donations: initialDonations = [
   const refreshDonations = async () => {
     setFetchingDonations(true);
     try {
-      const res = await axios.get('/api/blood/my-donations');
+      const res = await api.get('/api/blood/my-donations');
       const fresh = res.data.donations || [];
       setDonations(fresh);
       if (onDonationRecorded) onDonationRecorded(fresh);
@@ -197,7 +197,7 @@ export default function DonorEligibility({ user, donations: initialDonations = [
     setToggleMsg('');
     try {
       const newVal = !isAvailable;
-      await axios.patch('/api/auth/profile', { isAvailable: newVal });
+      await api.patch('/api/auth/profile', { isAvailable: newVal });
       setIsAvailable(newVal);
       if (onAvailabilityChange) onAvailabilityChange(newVal);
       setToggleMsg(newVal ? 'You are now visible to receivers!' : 'You are now hidden from new requests.');
@@ -219,7 +219,7 @@ export default function DonorEligibility({ user, donations: initialDonations = [
     setSubmitting(true);
     setFormMsg({ type: '', text: '' });
     try {
-      await axios.post('/api/blood/donate', {
+      await api.post('/api/blood/donate', {
         hospital: form.hospital.trim(),
         bloodGroup: form.bloodGroup || user?.bloodGroup,
         units: Number(form.units),

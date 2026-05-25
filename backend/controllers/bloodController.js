@@ -5,15 +5,23 @@ import User from '../models/user.js';
 import Donation from '../models/Donation.js';
 import { autoResetAvailability } from './authController.js';
 import { broadcastToBloodGroup, broadcastToAllBloodGroup, sendToUser } from '../sse.js';
-import nodemailer from 'nodemailer';
+import { invalidateCache } from '../config/cache.js';
 import crypto from 'crypto';
 import dotenv from 'dotenv';
 dotenv.config();
 
-const createTransporter = () => nodemailer.createTransport({
-  service: 'gmail',
-  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-});
+// Lazy transporter — initialised on first email send, not at startup
+let _transporter = null;
+const getTransporter = async () => {
+  if (!_transporter) {
+    const nodemailer = (await import('nodemailer')).default;
+    _transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+    });
+  }
+  return _transporter;
+};
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
@@ -115,6 +123,7 @@ export const createBloodRequest = async (req, res) => {
         contactPhone,
         requesterName: req.user?.username || 'A patient',
         createdAt: request.createdAt,
+        coordinates: coordinates || null,   // ← fix: include coordinates so dashboard map pins instantly
       };
       broadcastToBloodGroup(bloodGroup, 'new_blood_request', ssePayload, req.user._id);
     } catch (sseErr) {
@@ -133,16 +142,28 @@ export const createBloodRequest = async (req, res) => {
         }).select('_id email username').lean();
 
         if (emailDonors.length > 0) {
-          const transporter = createTransporter();
-          const tokenEntries = [];
+          const requesterName = req.user?.username || 'A patient';
 
-          await Promise.allSettled(emailDonors.map(async (donor) => {
-            const token = crypto.randomBytes(20).toString('hex');
-            tokenEntries.push({ donorId: donor._id, token, used: false, action: null });
+          // Step 1: Generate all tokens synchronously (fast — no I/O)
+          const tokenEntries = emailDonors.map((donor) => ({
+            donorId: donor._id,
+            token: crypto.randomBytes(20).toString('hex'),
+            used: false,
+            action: null,
+          }));
 
-            const acceptUrl  = `${FRONTEND_URL}/emergency-respond?token=${token}&action=accept`;
-            const rejectUrl  = `${FRONTEND_URL}/emergency-respond?token=${token}&action=reject`;
-            const requesterName = req.user?.username || 'A patient';
+          // Step 2: Persist tokens to DB immediately so donor links are valid
+          // before any email is even opened.
+          await BloodRequest.findByIdAndUpdate(request._id, {
+            $push: { emailTokens: { $each: tokenEntries } },
+          });
+
+          // Step 3: Send emails in the background — do NOT await this.
+          // The client gets a response instantly; emails deliver asynchronously.
+          Promise.allSettled(tokenEntries.map(async (entry, i) => {
+            const donor = emailDonors[i];
+            const acceptUrl = `${FRONTEND_URL}/emergency-respond?token=${entry.token}&action=accept`;
+            const rejectUrl = `${FRONTEND_URL}/emergency-respond?token=${entry.token}&action=reject`;
 
             const html = `
               <div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;background:#fff;border-radius:16px;overflow:hidden;border:1px solid #fecaca;">
@@ -210,20 +231,20 @@ export const createBloodRequest = async (req, res) => {
               </div>
             `;
 
-            await transporter.sendMail({
+            return (await getTransporter()).sendMail({
               from: `"BloodBridge 🚨" <${process.env.EMAIL_USER}>`,
               to: donor.email,
               subject: `🚨 URGENT: ${bloodGroup} blood needed at ${hospital} — Can you help?`,
               html,
             });
-          }));
-
-          // Save all tokens to the request
-          await BloodRequest.findByIdAndUpdate(request._id, {
-            $push: { emailTokens: { $each: tokenEntries } },
+          })).then((results) => {
+            const sent = results.filter(r => r.status === 'fulfilled').length;
+            console.log(`[Emergency Email] Sent ${sent}/${emailDonors.length} emails for request ${request._id}`);
+          }).catch((err) => {
+            console.error('[Emergency Email] Background send error:', err.message);
           });
 
-          console.log(`[Emergency Email] Sent to ${emailDonors.length} donors for request ${request._id}`);
+          console.log(`[Emergency Email] Queued ${emailDonors.length} emails for request ${request._id} (sending in background)`);
         }
       } catch (emailErr) {
         console.error('[Emergency Email] Failed (non-fatal):', emailErr.message);
@@ -285,6 +306,9 @@ export const createBloodRequest = async (req, res) => {
       }, 10 * 60 * 1000); // 10 minutes
     }
     // ─────────────────────────────────────────────────────────────────────
+
+    // Bust stat/map caches so next load reflects this new request
+    invalidateCache(['platform_stats', 'active_requests_map']);
 
     res.status(201).json({
       success: true,
@@ -490,6 +514,9 @@ export const acceptBloodRequest = async (req, res) => {
     }
     // ─────────────────────────────────────────────────────────────────────
 
+    // Bust caches — donor availability changed, stats changed
+    invalidateCache(['platform_stats', 'active_requests_map', /^search_donors:/]);
+
     res.status(200).json({
       success: true,
       message: 'Request accepted! Donation recorded and 56-day cooldown started.',
@@ -655,7 +682,7 @@ export const getDonors = async (req, res) => {
     }
 
     const donors = await User.find(filter)
-      .select('username bloodGroup phone location isAvailable lastDonation createdAt')
+      .select('username bloodGroup phone location address isAvailable lastDonation createdAt coordinates')
       .sort({ isAvailable: -1, createdAt: -1 })
       .lean();
 
@@ -931,6 +958,31 @@ export const assignDonorToRequest = async (req, res) => {
 };
 
 /**
+ * Active blood requests with coordinates — public, for the Home page map
+ * GET /api/blood/active-requests-map
+ * Returns pending + accepted requests from the last 48 hours that have GPS coordinates
+ */
+export const getActiveRequestsMap = async (req, res) => {
+  try {
+    const since = new Date(Date.now() - 48 * 60 * 60 * 1000); // last 48 hours
+    const requests = await BloodRequest.find({
+      status: { $in: ['pending', 'accepted'] },
+      createdAt: { $gte: since },
+      'coordinates.lat': { $ne: null },
+      'coordinates.lng': { $ne: null },
+    })
+      .select('bloodGroup units urgency hospital location coordinates status createdAt contactPhone')
+      .lean();
+
+    res.set('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+    res.status(200).json({ success: true, requests });
+  } catch (err) {
+    console.error('Get active requests map error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+};
+
+/**
  * Public platform stats — no auth required
  * GET /api/blood/stats
  */
@@ -973,7 +1025,7 @@ export const getPlatformStats = async (req, res) => {
       ? Math.round((monthlyFulfilled / monthlyRequests) * 100)
       : 0;
 
-    res.status(200).json({
+    const body = {
       success: true,
       stats: {
         donors:          totalDonors,
@@ -983,7 +1035,11 @@ export const getPlatformStats = async (req, res) => {
         monthlyRequests,
         successRate,
       },
-    });
+    };
+
+    // Tell browsers/CDNs they can cache this for 30 seconds
+    res.set('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+    res.status(200).json(body);
   } catch (err) {
     console.error('Platform stats error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -1125,5 +1181,46 @@ export const emailRespondToRequest = async (req, res) => {
   } catch (err) {
     console.error('Email respond error:', err);
     res.status(500).json({ success: false, message: 'Server error. Please try again.' });
+  }
+};
+
+/**
+ * Search donors — available to ANY logged-in user (donor, receiver, hospital)
+ * GET /api/blood/search-donors?bloodGroup=A%2B&location=kathmandu&available=true
+ *
+ * Returns donors with coordinates so the frontend can plot them on a map.
+ * Sensitive fields (email, password, tokens) are never returned.
+ */
+export const searchDonors = async (req, res) => {
+  try {
+    const { bloodGroup, location, available } = req.query;
+
+    const filter = { role: 'donor' };
+
+    if (bloodGroup) filter.bloodGroup = bloodGroup;
+
+    // available=true → only ready donors; available=false → only cooldown donors
+    // omitted → all donors
+    if (available === 'true')  filter.isAvailable = true;
+    if (available === 'false') filter.isAvailable = false;
+
+    if (location) {
+      filter.$or = [
+        { location: { $regex: location, $options: 'i' } },
+        { address:  { $regex: location, $options: 'i' } },
+        { username: { $regex: location, $options: 'i' } },
+      ];
+    }
+
+    const donors = await User.find(filter)
+      .select('username bloodGroup phone location address isAvailable lastDonation coordinates createdAt')
+      .sort({ isAvailable: -1, createdAt: -1 })
+      .limit(300)
+      .lean();
+
+    res.status(200).json({ success: true, donors });
+  } catch (err) {
+    console.error('searchDonors error:', err);
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 };

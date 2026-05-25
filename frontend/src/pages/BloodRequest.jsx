@@ -1,7 +1,9 @@
 // src/pages/BloodRequest.jsx
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useState, useEffect } from 'react';
-import axios from 'axios';
+import { useState, useEffect , lazy, Suspense } from 'react';
+import api from '../services/api';
+const MapPicker = lazy(() => import('../components/MapPicker'));
+import { useGeolocation, reverseGeocode } from '../hooks/useGeolocation';
 
 const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
 
@@ -23,6 +25,12 @@ function BloodRequest() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [step, setStep] = useState(1); // multi-step feel: 1 = blood details, 2 = contact info
+
+  // ── Map state ────────────────────────────────────────────────────────────
+  const [showMap, setShowMap] = useState(false);
+  const [pickedCoords, setPickedCoords] = useState(null); // { lat, lng }
+  const [geocoding, setGeocoding] = useState(false);
+  const { location: userLocation, loading: gpsLoading, error: gpsError, getLocation } = useGeolocation();
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -70,12 +78,18 @@ function BloodRequest() {
         location: formData.hospital,
         contactPhone: formData.contactPhone,
         note: formData.note,
+        // ── Map coordinates (saved to backend for future map features) ──
+        coordinates: pickedCoords
+          ? { lat: pickedCoords.lat, lng: pickedCoords.lng }
+          : userLocation
+          ? { lat: userLocation.lat, lng: userLocation.lng }
+          : { lat: null, lng: null },
       };
 
       const token = localStorage.getItem('token');
       if (!token) throw new Error('Please login first');
 
-      const res = await axios.post('/api/blood/request', payload);
+      const res = await api.post('/api/blood/request', payload);
 
       if (res.data.success) {
         setSubmitted(true);
@@ -283,7 +297,7 @@ function BloodRequest() {
                 </div>
               </div>
 
-              {/* Hospital */}
+              {/* Hospital + Map Picker */}
               <div>
                 <label className="block text-sm font-semibold text-gray-700 mb-2">
                   Hospital Name &amp; District <span className="text-red-500">*</span>
@@ -304,6 +318,86 @@ function BloodRequest() {
                     className="w-full pl-12 pr-4 py-4 rounded-2xl border border-gray-200 focus:border-red-400 focus:ring-2 focus:ring-red-100 outline-none bg-white transition-all text-base"
                   />
                 </div>
+
+                {/* Map action buttons */}
+                <div className="flex gap-2 mt-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        const coords = await getLocation();
+                        setPickedCoords(coords);
+                        setShowMap(true);
+                        setGeocoding(true);
+                        const label = await reverseGeocode(coords.lat, coords.lng);
+                        setGeocoding(false);
+                        if (!formData.hospital) {
+                          setFormData(prev => ({ ...prev, hospital: label }));
+                        }
+                      } catch { setGeocoding(false); }
+                    }}
+                    disabled={gpsLoading}
+                    className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 border border-blue-200 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-xl transition disabled:opacity-60"
+                  >
+                    {gpsLoading
+                      ? <span className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin" />
+                      : '📍'
+                    }
+                    Detect My Location
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowMap(m => !m)}
+                    className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 border border-gray-200 bg-gray-50 hover:bg-gray-100 px-3 py-1.5 rounded-xl transition"
+                  >
+                    🗺️ {showMap ? 'Hide Map' : 'Pick on Map'}
+                  </button>
+                </div>
+
+                {/* GPS error */}
+                {gpsError && (
+                  <p className="text-red-500 text-xs mt-1 bg-red-50 px-3 py-1.5 rounded-xl">{gpsError}</p>
+                )}
+                {geocoding && (
+                  <p className="text-blue-500 text-xs mt-1">Looking up address...</p>
+                )}
+
+                {/* Inline Map */}
+                {showMap && (
+                  <div className="mt-3 rounded-2xl overflow-hidden border border-gray-200 shadow-sm">
+                    <div className="bg-gray-50 px-4 py-2 text-xs text-gray-500 border-b border-gray-200">
+                      📍 Click on the map to pin the hospital / your exact location
+                    </div>
+                    <Suspense fallback={<div style={{height:"260px",display:"flex",alignItems:"center",justifyContent:"center",background:"#fef2f2"}}><div style={{width:28,height:28,border:"4px solid #fecaca",borderTopColor:"#dc2626",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/></div>}>
+                    <MapPicker
+                      height="280px"
+                      center={
+                        pickedCoords
+                          ? [pickedCoords.lat, pickedCoords.lng]
+                          : userLocation
+                          ? [userLocation.lat, userLocation.lng]
+                          : [27.7172, 85.3240]
+                      }
+                      zoom={14}
+                      userLocation={userLocation}
+                      pickedLocation={pickedCoords}
+                      flyTo={pickedCoords || userLocation}
+                      onLocationPick={async (coords) => {
+                        setPickedCoords(coords);
+                        setGeocoding(true);
+                        const label = await reverseGeocode(coords.lat, coords.lng);
+                        setGeocoding(false);
+                        setFormData(prev => ({ ...prev, hospital: label }));
+                      }}
+                    />
+                    </Suspense>
+                    {pickedCoords && (
+                      <div className="bg-green-50 px-4 py-2 text-xs text-green-700 border-t border-green-100">
+                        ✅ Location pinned: {pickedCoords.lat.toFixed(5)}, {pickedCoords.lng.toFixed(5)}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               <button

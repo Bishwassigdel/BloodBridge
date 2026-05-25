@@ -3,7 +3,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { FaHeartbeat, FaEnvelope } from 'react-icons/fa';
-import axios from 'axios';
+import api from '../services/api';
 
 const VerifyEmail = () => {
   const [digits, setDigits] = useState(['', '', '', '', '', '']);
@@ -106,7 +106,7 @@ const VerifyEmail = () => {
     setSuccess('');
 
     try {
-      await axios.post('/api/auth/resend-verification', { email });
+      await api.post('/api/auth/resend-verification', { email });
       setSuccess('New code sent! Check your email.');
       setDigits(['', '', '', '', '', '']);
       setCountdown(60);

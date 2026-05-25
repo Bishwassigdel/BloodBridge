@@ -3,12 +3,30 @@ import User from '../models/user.js';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
-import nodemailer from 'nodemailer';
-import { OAuth2Client } from 'google-auth-library';
 import dotenv from 'dotenv';
 dotenv.config();
 
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+// ── Lazy singletons — only initialised on first use, not at startup ──────
+let _googleClient = null;
+const getGoogleClient = async () => {
+  if (!_googleClient) {
+    const { OAuth2Client } = await import('google-auth-library');
+    _googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+  }
+  return _googleClient;
+};
+
+let _transporter = null;
+const getTransporter = async () => {
+  if (!_transporter) {
+    const nodemailer = (await import('nodemailer')).default;
+    _transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+    });
+  }
+  return _transporter;
+};
 
 // ── Donation cooldown constant ──────────────────────────────────────────
 const DONATION_COOLDOWN_DAYS = 56;
@@ -49,11 +67,6 @@ const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, { expiresIn: '30d' });
 };
 
-// ── Shared email transporter ─────────────────────────────────────────────
-const createTransporter = () => nodemailer.createTransport({
-  service: 'gmail',
-  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-});
 
 // ── Generate a 6-digit OTP ───────────────────────────────────────────────
 const generateOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
@@ -110,7 +123,7 @@ export const signupUser = async (req, res) => {
     // Send OTP email — wrapped separately so a mail failure doesn't break signup
     const roleLabel = role === 'hospital' ? 'Organization' : role.charAt(0).toUpperCase() + role.slice(1);
     try {
-      await createTransporter().sendMail({
+      await (await getTransporter()).sendMail({
         from: `"BloodBridge" <${process.env.EMAIL_USER}>`,
         to: user.email,
         subject: 'BloodBridge – Verify Your Email',
@@ -229,7 +242,7 @@ export const resendVerificationCode = async (req, res) => {
     user.verificationCodeExpires = new Date(Date.now() + 15 * 60 * 1000);
     await user.save();
 
-    await createTransporter().sendMail({
+    await (await getTransporter()).sendMail({
       from: `"BloodBridge" <${process.env.EMAIL_USER}>`,
       to: user.email,
       subject: 'BloodBridge – New Verification Code',
@@ -300,6 +313,9 @@ export const loginUser = async (req, res) => {
     // Success
     const token = generateToken(user._id);
 
+    // Auto-reset 56-day donor cooldown on login (avoids doing it on every /me call)
+    await autoResetAvailability(user);
+
     console.log('Backend → Login success for:', user.email || user.phone);
 
     res.status(200).json({
@@ -323,27 +339,31 @@ export const loginUser = async (req, res) => {
   }
 };
 
-// Get Current User (unchanged)
+// Get Current User
 export const getMe = async (req, res) => {
   try {
-    const userWithPassword = await User.findById(req.user._id).select('+password');
+    // Single query with +password so we can check its presence in memory —
+    // no second round-trip needed.
+    const user = await User.findById(req.user._id)
+      .select('+password -resetPasswordToken -resetPasswordExpire -__v');
 
-    if (!userWithPassword) {
+    if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    let user = await User.findById(req.user._id).select(
-      '-password -resetPasswordToken -resetPasswordExpire -__v'
-    );
+    const hasPassword = !!user.password;
 
-    // Auto-reset availability after 56-day cooldown
-    user = await autoResetAvailability(user);
+    // Strip password before sending to client
+    const userObj = user.toObject();
+    delete userObj.password;
 
-    // Tell the frontend whether this account has a password set
-    // (Google-only accounts have no password; regular accounts do)
+    // Note: autoResetAvailability is intentionally NOT called here anymore.
+    // Calling it on every /me request caused an extra DB write on each profile
+    // load. It is now only triggered on login and after a donation is recorded.
+
     res.status(200).json({
       success: true,
-      user: { ...user.toObject(), hasPassword: !!userWithPassword.password },
+      user: { ...userObj, hasPassword },
     });
   } catch (err) {
     console.error('Get me error:', err);
@@ -373,7 +393,7 @@ export const forgotPassword = async (req, res) => {
     const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password?token=${resetToken}`;
 
     try {
-      await createTransporter().sendMail({
+      await (await getTransporter()).sendMail({
         from: `"BloodBridge" <${process.env.EMAIL_USER}>`,
         to: user.email,
         subject: 'BloodBridge – Reset Your Password',
@@ -462,7 +482,7 @@ export const googleLogin = async (req, res) => {
   const newUserRole = allowedRoles.includes(requestedRole) ? requestedRole : 'receiver';
 
   try {
-    const ticket = await googleClient.verifyIdToken({
+    const ticket = await (await getGoogleClient()).verifyIdToken({
       idToken: credential,
       audience: process.env.GOOGLE_CLIENT_ID,
     });
@@ -528,6 +548,31 @@ export const updateProfile = async (req, res) => {
 
     delete updates.email;
     delete updates.role;
+
+    // ── Handle coordinates from FormData bracket notation ─────────────────
+    // Multer does NOT expand 'coordinates[lat]' into nested objects, so we
+    // do it manually here and clean up the raw keys.
+    const rawLat = updates['coordinates[lat]'];
+    const rawLng = updates['coordinates[lng]'];
+    if (rawLat != null && rawLng != null) {
+      const lat = parseFloat(rawLat);
+      const lng = parseFloat(rawLng);
+      if (!isNaN(lat) && !isNaN(lng)) {
+        updates.coordinates = { lat, lng };
+      }
+    }
+    delete updates['coordinates[lat]'];
+    delete updates['coordinates[lng]'];
+    // Also handle if sent as a JSON object (e.g. from non-FormData requests)
+    if (updates.coordinates && typeof updates.coordinates === 'object') {
+      const lat = parseFloat(updates.coordinates.lat);
+      const lng = parseFloat(updates.coordinates.lng);
+      if (!isNaN(lat) && !isNaN(lng)) {
+        updates.coordinates = { lat, lng };
+      } else {
+        delete updates.coordinates;
+      }
+    }
 
     if (updates.newPassword) {
       // Validate password length
@@ -627,5 +672,29 @@ export const setPassword = async (req, res) => {
   } catch (error) {
     console.error('Set password error:', error.message);
     res.status(500).json({ success: false, message: 'Server error while setting password' });
+  }
+};
+/**
+ * GET /api/auth/hospitals — public endpoint
+ * Returns all verified hospitals that have set their coordinates.
+ * Used by the Home page map to show hospital locations.
+ */
+export const getHospitals = async (req, res) => {
+  try {
+    const hospitals = await User.find({
+      role: 'hospital',
+      isVerified: true,
+      'coordinates.lat': { $ne: null },
+      'coordinates.lng': { $ne: null },
+    })
+      .select('hospitalName username location address coordinates phone avatar')
+      .lean();
+
+    // Hospitals rarely change — browsers/CDN can cache for 2 minutes
+    res.set('Cache-Control', 'public, max-age=120, stale-while-revalidate=300');
+    res.status(200).json({ success: true, hospitals });
+  } catch (err) {
+    console.error('getHospitals error:', err.message);
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 };

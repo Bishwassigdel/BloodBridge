@@ -1,5 +1,5 @@
 // src/context/AuthContext.jsx
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 
 // Axios defaults – set once at module level
@@ -21,7 +21,7 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Token interceptor – clean & log
+  // Token interceptor – attach JWT to every request
   useEffect(() => {
     const requestInterceptor = axios.interceptors.request.use(
       (config) => {
@@ -29,9 +29,6 @@ export const AuthProvider = ({ children }) => {
         if (token) {
           const cleanToken = token.replace(/^["']+|["']+$/g, '').trim();
           config.headers.Authorization = `Bearer ${cleanToken}`;
-          console.log(`[Axios Request] → ${config.url} | Token (first 20): ${cleanToken.substring(0, 20)}...`);
-        } else {
-          console.log(`[Axios Request] → ${config.url} | No token`);
         }
         return config;
       },
@@ -68,56 +65,43 @@ export const AuthProvider = ({ children }) => {
     };
   }, []);
 
-  // Initialize auth on mount
+  // Initialize auth on mount — fast-load from localStorage then verify with /me
   useEffect(() => {
     const initializeAuth = async () => {
-      console.log('[Auth Init] Starting...');
-
       const storedToken = localStorage.getItem('token');
-      const storedUser = localStorage.getItem('user');
+      const storedUser  = localStorage.getItem('user');
 
-      // Fast load from localStorage
       if (storedToken && storedUser) {
         try {
-          const parsedUser = JSON.parse(storedUser);
-          console.log('[Auth Init] Loaded from storage → role:', parsedUser.role || 'missing');
-          setUser(parsedUser);
-        } catch (err) {
-          console.error('[Auth Init] Invalid stored data:', err.message);
+          setUser(JSON.parse(storedUser));
+        } catch {
           localStorage.removeItem('token');
           localStorage.removeItem('user');
         }
       }
 
-      // Verify token with /me if present
       if (storedToken) {
         try {
           const res = await axios.get('/api/auth/me');
           if (res.data.success) {
-            console.log('[Auth Init] /me success → role:', res.data.user.role);
             setUser(res.data.user);
             localStorage.setItem('user', JSON.stringify(res.data.user));
           } else {
-            console.warn('[Auth Init] /me failed');
             logout();
           }
-        } catch (err) {
-          console.error('[Auth Init] /me failed:', err.response?.data?.message || err.message);
+        } catch {
           logout();
         }
       }
 
       setLoading(false);
-      console.log('[Auth Init] Done');
     };
 
     initializeAuth();
   }, []);
 
   // Login – safe & flexible
-  const login = async (identifier, password) => {
-    console.log('[Login] Attempting:', { identifier });
-
+  const login = useCallback(async (identifier, password) => {
     try {
       const payload = identifier.includes('@')
         ? { email: identifier.trim() }
@@ -128,38 +112,27 @@ export const AuthProvider = ({ children }) => {
         password: password.trim(),
       });
 
-      console.log('[Login] Full response:', JSON.stringify(res.data, null, 2));
-
       if (res.data.success) {
-        let token = res.data.token || res.data.user?.token || res.data.accessToken;
-
-        if (!token || typeof token !== 'string') {
-          console.warn('[Login] No valid token in response');
-          throw new Error('No token received from server');
-        }
+        const token = res.data.token || res.data.user?.token || res.data.accessToken;
+        if (!token || typeof token !== 'string') throw new Error('No token received from server');
 
         const cleanToken = token.replace(/^["']+|["']+$/g, '').trim();
         const userData = res.data.user || res.data;
 
-        console.log('[Login] Token saved (first 30 chars):', cleanToken.substring(0, 30) + '...');
-        console.log('[Login] Role:', userData.role || 'missing');
-
         localStorage.setItem('token', cleanToken);
         localStorage.setItem('user', JSON.stringify(userData));
         setUser(userData);
-
         return userData;
       }
 
       throw new Error(res.data.message || 'Login failed');
     } catch (err) {
-      console.error('[Login] Failed:', err.response?.data?.message || err.message);
       throw err;
     }
-  };
+  }, []);
 
   // Google Login / Register
-  const googleLogin = async (credential, role = 'receiver') => {
+  const googleLogin = useCallback(async (credential, role = 'receiver') => {
     try {
       const res = await axios.post('/api/auth/google', { credential, role });
       if (res.data.success) {
@@ -176,13 +149,12 @@ export const AuthProvider = ({ children }) => {
       }
       throw new Error(res.data.message || 'Google login failed');
     } catch (err) {
-      console.error('[Google Login] Failed:', err.response?.data?.message || err.message);
       throw err;
     }
-  };
+  }, []);
 
   // Signup – no auto-login; user must verify email first
-  const signup = async (data) => {
+  const signup = useCallback(async (data) => {
     try {
       const res = await axios.post('/api/auth/signup', data);
       if (res.data.success) {
@@ -194,10 +166,10 @@ export const AuthProvider = ({ children }) => {
       console.error('[Signup] Failed:', err);
       throw err;
     }
-  };
+  }, []);
 
   // Verify email OTP – logs user in on success
-  const verifyEmail = async (email, code) => {
+  const verifyEmail = useCallback(async (email, code) => {
     try {
       const res = await axios.post('/api/auth/verify-email', { email, code });
       if (res.data.success) {
@@ -217,37 +189,36 @@ export const AuthProvider = ({ children }) => {
       console.error('[VerifyEmail] Failed:', err);
       throw err;
     }
-  };
+  }, []);
 
-  const logout = () => {
-    console.log('[Logout] Clearing auth');
+  const logout = useCallback(() => {
     setUser(null);
     localStorage.removeItem('token');
     localStorage.removeItem('user');
-  };
+  }, []);
 
-  const setPassword = async (password, currentPassword = null) => {
+  const setPassword = useCallback(async (password, currentPassword = null) => {
     try {
       const payload = { password };
-      if (currentPassword) {
-        payload.currentPassword = currentPassword;
-      }
+      if (currentPassword) payload.currentPassword = currentPassword;
 
       const res = await axios.post('/api/auth/set-password', payload);
-
-      if (res.data.success) {
-        console.log('[SetPassword] Success:', res.data.message);
-        return res.data;
-      }
+      if (res.data.success) return res.data;
       throw new Error(res.data.message || 'Failed to set password');
     } catch (err) {
-      console.error('[SetPassword] Failed:', err);
       throw err;
     }
-  };
+  }, []);
+
+  // Memoize the context value so consumers only re-render when user or loading
+  // actually changes — not on every AuthProvider render.
+  const value = useMemo(
+    () => ({ user, setUser, loading, login, signup, logout, googleLogin, verifyEmail, setPassword }),
+    [user, loading, login, signup, logout, googleLogin, verifyEmail, setPassword]
+  );
 
   return (
-    <AuthContext.Provider value={{ user, setUser, loading, login, signup, logout, googleLogin, verifyEmail, setPassword }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );

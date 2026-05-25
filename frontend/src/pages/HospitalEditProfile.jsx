@@ -1,5 +1,5 @@
 // src/pages/HospitalEditProfile.jsx
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef , lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -13,7 +13,9 @@ import {
   FaUpload,
   FaSpinner,
 } from 'react-icons/fa';
-import axios from 'axios';
+import api from '../services/api';
+const MapPicker = lazy(() => import('../components/MapPicker'));
+import { useGeolocation, reverseGeocode } from '../hooks/useGeolocation';
 
 function HospitalEditProfile() {
   const { user, setUser } = useAuth();
@@ -41,6 +43,13 @@ function HospitalEditProfile() {
   const [fieldErrors, setFieldErrors] = useState({});
   const [hasPassword, setHasPassword] = useState(false);
 
+  // ── GPS + Map ─────────────────────────────────────────────────────────────
+  const { loading: gpsLoading, error: gpsError, getLocation, clearError } = useGeolocation();
+  const [geoSuccess, setGeoSuccess]   = useState(false);
+  const [showLocationMap, setShowLocationMap] = useState(false);
+  const [pickedCoords, setPickedCoords]       = useState(null);
+  const [geocoding, setGeocoding]             = useState(false);
+
   // Fetch latest user data on mount
   useEffect(() => {
     const fetchLatestUser = async () => {
@@ -48,7 +57,7 @@ function HospitalEditProfile() {
         const token = localStorage.getItem('token');
         if (!token) return navigate('/login');
 
-        const res = await axios.get('/api/auth/me');
+        const res = await api.get('/api/auth/me');
 
         const freshUser = res.data.user || res.data;
 
@@ -145,6 +154,38 @@ function HospitalEditProfile() {
     reader.readAsDataURL(file);
   };
 
+  // ── GPS detect ─────────────────────────────────────────────────────────
+  const handleDetectLocation = async () => {
+    clearError();
+    setGeoSuccess(false);
+    try {
+      const coords = await getLocation();
+      setGeocoding(true);
+      const label = await reverseGeocode(coords.lat, coords.lng);
+      setFormData(prev => ({ ...prev, location: label }));
+      setPickedCoords(coords);
+      setGeoSuccess(true);
+    } catch {
+      // error surfaced via gpsError from hook
+    } finally {
+      setGeocoding(false);
+    }
+  };
+
+  const handleMapPick = async (coords) => {
+    setPickedCoords(coords);
+    setGeocoding(true);
+    try {
+      const label = await reverseGeocode(coords.lat, coords.lng);
+      setFormData(prev => ({ ...prev, location: label }));
+      setGeoSuccess(true);
+    } catch {
+      setFormData(prev => ({ ...prev, location: `${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}` }));
+    } finally {
+      setGeocoding(false);
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSuccessMsg('');
@@ -191,12 +232,18 @@ function HospitalEditProfile() {
         formDataToSend.append('newPassword', formData.newPassword);
       }
 
+      // Append coordinates if picked via GPS or map
+      if (pickedCoords?.lat != null) {
+        formDataToSend.append('coordinates[lat]', pickedCoords.lat);
+        formDataToSend.append('coordinates[lng]', pickedCoords.lng);
+      }
+
       // Append avatar if changed
       if (avatarFile) {
         formDataToSend.append('avatar', avatarFile);
       }
 
-      const res = await axios.patch('/api/auth/profile', formDataToSend, {
+      const res = await api.patch('/api/auth/profile', formDataToSend, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
@@ -344,16 +391,95 @@ function HospitalEditProfile() {
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1.5 flex items-center gap-2">
                 <FaMapMarkerAlt className="text-red-600" />
-                Location/Address
+                Location / Address
               </label>
-              <input
-                type="text"
-                name="location"
-                value={formData.location}
-                onChange={handleChange}
-                placeholder="e.g. Kathmandu, Nepal"
-                className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
-              />
+
+              {/* Input row with clickable 📍 GPS icon */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={handleDetectLocation}
+                  disabled={gpsLoading || geocoding}
+                  title="Click to detect live location"
+                  className="absolute left-3 top-1/2 -translate-y-1/2 z-10 p-1 rounded-lg transition-all disabled:cursor-not-allowed group"
+                >
+                  {gpsLoading || geocoding ? (
+                    <FaSpinner className="text-xl text-red-500 animate-spin" />
+                  ) : geoSuccess ? (
+                    <FaMapMarkerAlt className="text-xl text-green-500" />
+                  ) : (
+                    <FaMapMarkerAlt className="text-xl text-red-500 group-hover:text-red-700 group-hover:scale-125 transition-transform duration-150" />
+                  )}
+                </button>
+                <input
+                  type="text"
+                  name="location"
+                  value={formData.location}
+                  onChange={(e) => { handleChange(e); setGeoSuccess(false); }}
+                  placeholder="Click 📍 or type address…"
+                  className={`w-full pl-12 pr-4 py-3 rounded-xl border outline-none transition focus:ring-2 ${
+                    geoSuccess
+                      ? 'border-green-400 focus:border-green-500 focus:ring-green-100'
+                      : 'border-red-200 focus:border-red-500 focus:ring-red-100'
+                  }`}
+                />
+              </div>
+
+              {/* Status messages */}
+              {(gpsLoading || geocoding) && (
+                <p className="mt-1.5 text-xs text-blue-500 flex items-center gap-1.5">
+                  <span className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin inline-block" />
+                  {geocoding ? 'Looking up address…' : 'Detecting your location…'}
+                </p>
+              )}
+              {geoSuccess && !gpsLoading && !geocoding && (
+                <p className="mt-1.5 text-xs text-green-600 font-medium">✅ Location detected — you can still edit it</p>
+              )}
+              {gpsError && (
+                <p className="mt-1.5 text-xs text-red-500 bg-red-50 px-3 py-1.5 rounded-lg">⚠️ {gpsError}</p>
+              )}
+
+              {/* Pick on Map toggle */}
+              <button
+                type="button"
+                onClick={() => setShowLocationMap(m => !m)}
+                className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-red-600 hover:text-red-800 transition-colors"
+              >
+                🗺️ {showLocationMap ? 'Hide Map' : 'Pick exact location on map'}
+              </button>
+
+              {showLocationMap && (
+                <div className="mt-3 rounded-2xl overflow-hidden border border-red-200 shadow-md">
+                  <Suspense fallback={<div style={{height:"260px",display:"flex",alignItems:"center",justifyContent:"center",background:"#fef2f2"}}><div style={{width:28,height:28,border:"4px solid #fecaca",borderTopColor:"#dc2626",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/></div>}>
+                  <MapPicker
+                    height="280px"
+                    center={
+                      pickedCoords
+                        ? [pickedCoords.lat, pickedCoords.lng]
+                        : [27.7172, 85.3240]   /* Kathmandu default */
+                    }
+                    zoom={13}
+                    pickedLocation={pickedCoords}
+                    onLocationPick={handleMapPick}
+                    markers={
+                      pickedCoords
+                        ? [{
+                            id: 'hospital',
+                            lat: pickedCoords.lat,
+                            lng: pickedCoords.lng,
+                            type: 'hospital',
+                            label: formData.hospitalName || 'Hospital',
+                            subLabel: formData.location || '',
+                          }]
+                        : []
+                    }
+                  />
+                  </Suspense>
+                  <p className="text-xs text-center text-gray-500 py-2 bg-gray-50 border-t border-red-100">
+                    Click anywhere on the map to set your exact location
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Website */}
