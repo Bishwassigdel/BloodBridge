@@ -1,5 +1,5 @@
 // src/pages/EditProfile.jsx - Universal Edit Profile for All User Types
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef , lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -17,7 +17,9 @@ import {
   FaMapMarkerAlt,
   FaGlobe,
 } from 'react-icons/fa';
-import axios from 'axios';
+import api from '../services/api';
+const MapPicker = lazy(() => import('../components/MapPicker'));
+import { useGeolocation, reverseGeocode } from '../hooks/useGeolocation';
 
 function EditProfile() {
   const { user, setUser } = useAuth();
@@ -62,6 +64,14 @@ function EditProfile() {
   const [errorMsg, setErrorMsg] = useState('');
   const [fieldErrors, setFieldErrors] = useState({});
 
+  // ── Map state ─────────────────────────────────────────────────────────────
+  const [showLocationMap, setShowLocationMap] = useState(false);
+  const [pickedCoords, setPickedCoords] = useState(
+    user?.coordinates?.lat ? { lat: user.coordinates.lat, lng: user.coordinates.lng } : null
+  );
+  const [geocoding, setGeocoding] = useState(false);
+  const { location: gpsLocation, loading: gpsLoading, error: gpsError, getLocation } = useGeolocation();
+
   // Fetch latest user data on mount
   useEffect(() => {
     const fetchLatestUser = async () => {
@@ -69,7 +79,7 @@ function EditProfile() {
         const token = localStorage.getItem('token');
         if (!token) return navigate('/login');
 
-        const res = await axios.get('/api/auth/me');
+        const res = await api.get('/api/auth/me');
         const freshUser = res.data.user || res.data;
         setUser(freshUser);
 
@@ -239,7 +249,13 @@ function EditProfile() {
         formDataToSend.append('avatar', avatarFile);
       }
 
-      const res = await axios.patch('/api/auth/profile', formDataToSend, {
+      // Append map coordinates if picked
+      if (pickedCoords) {
+        formDataToSend.append('coordinates[lat]', pickedCoords.lat);
+        formDataToSend.append('coordinates[lng]', pickedCoords.lng);
+      }
+
+      const res = await api.patch('/api/auth/profile', formDataToSend, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
 
@@ -429,6 +445,7 @@ function EditProfile() {
             )}
 
             {/* Location / Address */}
+            {/* ── Location field + Map Picker ─────────────────────────── */}
             {isHospital ? (
               <div>
                 <label className="flex items-center gap-2 text-sm font-medium text-gray-700 mb-1.5">
@@ -442,6 +459,20 @@ function EditProfile() {
                   onChange={handleChange}
                   placeholder="e.g. Kathmandu, Nepal"
                   className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
+                />
+                <LocationMapPicker
+                  pickedCoords={pickedCoords}
+                  setPickedCoords={setPickedCoords}
+                  showLocationMap={showLocationMap}
+                  setShowLocationMap={setShowLocationMap}
+                  geocoding={geocoding}
+                  setGeocoding={setGeocoding}
+                  gpsLoading={gpsLoading}
+                  gpsError={gpsError}
+                  gpsLocation={gpsLocation}
+                  getLocation={getLocation}
+                  setFormData={setFormData}
+                  locationField="location"
                 />
               </div>
             ) : (
@@ -457,6 +488,20 @@ function EditProfile() {
                   onChange={handleChange}
                   placeholder="e.g. Kathmandu, Nepal"
                   className="w-full px-4 py-3 rounded-xl border border-red-200 focus:border-red-500 focus:ring-2 focus:ring-red-100 outline-none transition"
+                />
+                <LocationMapPicker
+                  pickedCoords={pickedCoords}
+                  setPickedCoords={setPickedCoords}
+                  showLocationMap={showLocationMap}
+                  setShowLocationMap={setShowLocationMap}
+                  geocoding={geocoding}
+                  setGeocoding={setGeocoding}
+                  gpsLoading={gpsLoading}
+                  gpsError={gpsError}
+                  gpsLocation={gpsLocation}
+                  getLocation={getLocation}
+                  setFormData={setFormData}
+                  locationField="address"
                 />
               </div>
             )}
@@ -622,3 +667,110 @@ function EditProfile() {
 }
 
 export default EditProfile;
+
+// ── LocationMapPicker — reusable sub-component used inside EditProfile ──────
+function LocationMapPicker({
+  pickedCoords, setPickedCoords,
+  showLocationMap, setShowLocationMap,
+  geocoding, setGeocoding,
+  gpsLoading, gpsError, gpsLocation,
+  getLocation,
+  setFormData, locationField,
+}) {
+  const handleMapPick = async (coords) => {
+    setPickedCoords(coords);
+    setGeocoding(true);
+    const label = await reverseGeocode(coords.lat, coords.lng);
+    setGeocoding(false);
+    setFormData(prev => ({ ...prev, [locationField]: label }));
+  };
+
+  const handleGPS = async () => {
+    try {
+      const coords = await getLocation();
+      setPickedCoords(coords);
+      setShowLocationMap(true);
+      setGeocoding(true);
+      const label = await reverseGeocode(coords.lat, coords.lng);
+      setGeocoding(false);
+      setFormData(prev => ({ ...prev, [locationField]: label }));
+    } catch { setGeocoding(false); }
+  };
+
+  return (
+    <div className="mt-2">
+      {/* Action buttons */}
+      <div className="flex gap-2 flex-wrap">
+        <button
+          type="button"
+          onClick={handleGPS}
+          disabled={gpsLoading}
+          className="flex items-center gap-1.5 text-xs font-semibold text-blue-600 border border-blue-200 bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-xl transition disabled:opacity-60"
+        >
+          {gpsLoading
+            ? <span className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin" />
+            : '📍'
+          }
+          Use My Location
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowLocationMap(m => !m)}
+          className="flex items-center gap-1.5 text-xs font-semibold text-gray-600 border border-gray-200 bg-gray-50 hover:bg-gray-100 px-3 py-1.5 rounded-xl transition"
+        >
+          🗺️ {showLocationMap ? 'Hide Map' : 'Pick on Map'}
+        </button>
+        {pickedCoords && (
+          <span className="flex items-center gap-1 text-xs text-green-600 font-medium">
+            ✅ Location pinned
+          </span>
+        )}
+      </div>
+
+      {gpsError && (
+        <p className="text-red-500 text-xs mt-1 bg-red-50 px-3 py-1.5 rounded-xl">{gpsError}</p>
+      )}
+      {geocoding && (
+        <p className="text-blue-500 text-xs mt-1">Looking up address...</p>
+      )}
+
+      {/* Inline map */}
+      {showLocationMap && (
+        <div className="mt-3 rounded-xl overflow-hidden border border-red-200 shadow-sm">
+          <div className="bg-red-50 px-4 py-2 text-xs text-red-600 font-medium border-b border-red-100">
+            📍 Click anywhere on the map to set your location
+          </div>
+          <Suspense fallback={<div style={{height:"260px",display:"flex",alignItems:"center",justifyContent:"center",background:"#fef2f2"}}><div style={{width:28,height:28,border:"4px solid #fecaca",borderTopColor:"#dc2626",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/></div>}>
+          <MapPicker
+            height="260px"
+            center={
+              pickedCoords
+                ? [pickedCoords.lat, pickedCoords.lng]
+                : gpsLocation
+                ? [gpsLocation.lat, gpsLocation.lng]
+                : [27.7172, 85.3240]
+            }
+            zoom={14}
+            userLocation={gpsLocation}
+            pickedLocation={pickedCoords}
+            flyTo={pickedCoords || gpsLocation}
+            onLocationPick={handleMapPick}
+          />
+          </Suspense>
+          {pickedCoords && (
+            <div className="bg-green-50 px-4 py-2 text-xs text-green-700 border-t border-green-100 flex justify-between items-center">
+              <span>📍 {pickedCoords.lat.toFixed(5)}, {pickedCoords.lng.toFixed(5)}</span>
+              <button
+                type="button"
+                onClick={() => { setPickedCoords(null); setShowLocationMap(false); }}
+                className="text-red-400 hover:text-red-600 font-semibold"
+              >
+                ✕ Clear
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

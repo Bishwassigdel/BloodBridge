@@ -40,4 +40,10 @@ const notificationSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
+// ── Indexes ──────────────────────────────────────────────────────────────
+// Most common query: fetch all notifications for a user, newest first
+notificationSchema.index({ user: 1, createdAt: -1 });
+// Unread badge count
+notificationSchema.index({ user: 1, read: 1 });
+
 export default mongoose.model('Notification', notificationSchema);

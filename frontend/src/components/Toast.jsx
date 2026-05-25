@@ -29,7 +29,7 @@ const ICON_COLORS = {
  */
 export default function Toast({ toasts = [], remove }) {
   return (
-    <div className="fixed bottom-6 right-6 z-[9999] flex flex-col gap-3 pointer-events-none">
+    <div className="fixed top-6 right-6 z-[9999] flex flex-col gap-3 pointer-events-none">
       {toasts.map(t => (
         <ToastItem key={t.id} toast={t} remove={remove} />
       ))}
@@ -57,7 +57,7 @@ function ToastItem({ toast, remove }) {
       className={`pointer-events-auto flex items-start gap-3 px-4 py-3.5 rounded-2xl shadow-xl max-w-sm w-full
         ${STYLES[toast.type] || STYLES.info}
         transition-all duration-350
-        ${visible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'}`}
+        ${visible ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-8'}`}
     >
       <Icon className={`text-xl flex-shrink-0 mt-0.5 ${ICON_COLORS[toast.type]}`} />
       <div className="flex-1 min-w-0">

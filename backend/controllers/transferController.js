@@ -2,15 +2,21 @@ import BloodTransfer from '../models/BloodTransfer.js';
 import User from '../models/user.js';
 import Inventory from '../models/Inventory.js';
 import crypto from 'crypto';
-import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
 dotenv.config();
 
-// ── Shared email transporter ─────────────────────────────────────────────
-const createTransporter = () => nodemailer.createTransport({
-  service: 'gmail',
-  auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-});
+// Lazy transporter — initialised on first email send, not at startup
+let _transporter = null;
+const getTransporter = async () => {
+  if (!_transporter) {
+    const nodemailer = (await import('nodemailer')).default;
+    _transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+    });
+  }
+  return _transporter;
+};
 
 // Create Blood Transfer Request
 export const createBloodTransfer = async (req, res) => {
@@ -82,7 +88,7 @@ export const createBloodTransfer = async (req, res) => {
     const confirmationUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/blood-transfer?token=${confirmationToken}`;
 
     try {
-      await createTransporter().sendMail({
+      await (await getTransporter()).sendMail({
         from: `"BloodBridge" <${process.env.EMAIL_USER}>`,
         to: toHospitalEmail,
         subject: `BloodBridge – Blood Transfer Request from ${fromHospitalName}`,
@@ -231,7 +237,7 @@ export const acceptBloodTransfer = async (req, res) => {
     try {
       const sendingHospital = await User.findById(transfer.fromHospitalId);
       if (sendingHospital?.email) {
-        await createTransporter().sendMail({
+        await (await getTransporter()).sendMail({
           from: `"BloodBridge" <${process.env.EMAIL_USER}>`,
           to: sendingHospital.email,
           subject: `BloodBridge – Transfer Accepted: ${transfer.bloodGroup}`,

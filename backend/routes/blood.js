@@ -1,6 +1,7 @@
 import express from 'express';
 import { protect } from '../middleware/authMiddleware.js';
 import { restrictTo } from '../middleware/roleMiddleware.js';
+import { cacheMiddleware } from '../config/cache.js';
 
 import {
   createBloodRequest,
@@ -11,11 +12,13 @@ import {
   cancelBloodRequest,
   editBloodRequest,
   getDonors,
+  searchDonors,
   sendDonorAlert,
   getAllRequests,
   assignDonorToRequest,
   emailRespondToRequest,
   getPlatformStats,
+  getActiveRequestsMap,
 } from '../controllers/bloodController.js';
 
 import { recordDonation, getDonationHistory } from '../controllers/donationController.js';
@@ -35,8 +38,16 @@ import {
 const router = express.Router();
 
 // ── Public routes (no auth required) ────────────────────────────────────
-router.get('/stats', getPlatformStats);
+// Cache platform stats for 60s — these numbers change slowly
+router.get('/stats', cacheMiddleware('platform_stats', 60), getPlatformStats);
 router.get('/email-respond', emailRespondToRequest);
+// Cache active map data for 30s — new requests won't miss the window
+router.get('/active-requests-map', cacheMiddleware('active_requests_map', 30), getActiveRequestsMap);
+// Cache donor search results for 20s per query-string key
+router.get('/search-donors', (req, res, next) => {
+  const key = `search_donors:${JSON.stringify(req.query)}`;
+  return cacheMiddleware(key, 20)(req, res, next);
+}, searchDonors);
 
 router.use(protect);
 

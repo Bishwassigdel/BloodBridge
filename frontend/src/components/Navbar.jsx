@@ -6,7 +6,6 @@ import { FaHeartbeat, FaUserCircle, FaBars, FaTimes, FaSignOutAlt } from 'react-
 const Navbar = ({ user, onLogout }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activeSection, setActiveSection] = useState('');
-
   // Smooth scroll to section
   const scrollToSection = (id) => {
     const el = document.getElementById(id);
@@ -40,7 +39,7 @@ const Navbar = ({ user, onLogout }) => {
       setActiveSection(current);
     };
 
-    window.addEventListener('scroll', handleScroll);
+    window.addEventListener('scroll', handleScroll, { passive: true });
     handleScroll();
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);

@@ -45,4 +45,18 @@ const bloodRequestSchema = new mongoose.Schema({
   }],
 }, { timestamps: true });
 
+// ── Indexes for fast blood request queries ──────────────────────────────
+// Donor dashboard: pending requests matching blood group, sorted by urgency+date
+bloodRequestSchema.index({ bloodGroup: 1, status: 1, createdAt: -1 });
+// Receiver "my requests" panel
+bloodRequestSchema.index({ requester: 1, createdAt: -1 });
+// Donor "my accepted" panel
+bloodRequestSchema.index({ acceptedBy: 1, status: 1 });
+// Hospital "all requests" with filters
+bloodRequestSchema.index({ status: 1, urgency: -1, createdAt: -1 });
+// Map: active requests in last 48h with GPS coords
+bloodRequestSchema.index({ status: 1, createdAt: -1, 'coordinates.lat': 1, 'coordinates.lng': 1 });
+// Email token lookup (emergency email accept/reject)
+bloodRequestSchema.index({ 'emailTokens.token': 1 });
+
 export default mongoose.model('BloodRequest', bloodRequestSchema);

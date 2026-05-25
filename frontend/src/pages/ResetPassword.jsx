@@ -1,7 +1,7 @@
 // src/pages/ResetPassword.jsx
 import { useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import axios from 'axios';
+import api from '../services/api';
 import { FaHeartbeat, FaLock, FaEye, FaEyeSlash } from 'react-icons/fa';
 
 const ResetPassword = () => {
@@ -39,7 +39,7 @@ const ResetPassword = () => {
     setLoading(true);
 
     try {
-      const res = await axios.post('/api/auth/reset-password', { token, newPassword });
+      const res = await api.post('/api/auth/reset-password', { token, newPassword });
       if (res.data.success) {
         setMessage(res.data.message || 'Password updated successfully.');
         setTimeout(() => navigate('/login'), 2000);

@@ -11,7 +11,7 @@ import {
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
 import { useAuth } from '../context/AuthContext';
-import axios from 'axios';
+import api from '../services/api';
 
 function SubmitStory() {
   const { user, logout } = useAuth();
@@ -35,7 +35,7 @@ function SubmitStory() {
     }
     setSubmitting(true);
     try {
-      await axios.post('/api/stories', form);
+      await api.post('/api/stories', form);
       setSuccess(true);
       setForm({ title: '', message: '' });
     } catch (err) {

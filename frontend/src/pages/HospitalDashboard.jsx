@@ -1,7 +1,7 @@
 // src/pages/HospitalDashboard.jsx
-import { useState, useEffect } from 'react';
+import { useState, useEffect , lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
-import axios from 'axios';
+import api, { invalidateFrontendCache } from '../services/api';
 import {
   FaHeartbeat,
   FaClipboardList,
@@ -13,6 +13,7 @@ import {
   FaBell,
   FaTint,
   FaExclamationTriangle,
+  FaInfoCircle,
   FaSpinner,
   FaRedo,
   FaExclamationCircle,
@@ -40,10 +41,15 @@ import {
   FaEnvelope,
 } from 'react-icons/fa';
 import { useAuth } from '../context/AuthContext';
+import Toast, { useToast } from '../components/Toast';
+const MapPicker = lazy(() => import('../components/MapPicker'));
+import { useGeolocation, reverseGeocode } from '../hooks/useGeolocation';
+import { usePushNotifications } from '../hooks/usePushNotifications';
 
 function HospitalDashboard() {
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
+  const { user, loading: authLoading, logout } = useAuth();
+  const { permission: pushPermission, supported: pushSupported, requestPermission: requestPush } = usePushNotifications();
 
   const [activePanel, setActivePanel] = useState('donors');
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -56,6 +62,26 @@ function HospitalDashboard() {
   const [updateUnits, setUpdateUnits] = useState('');
   const [updateReason, setUpdateReason] = useState('');
   const [expiryDate, setExpiryDate] = useState('');
+
+  // Add Unit modal (for +1 button on each blood group card)
+  const [addUnitModal, setAddUnitModal] = useState(null); // { bloodGroup }
+  const [addUnitExpiryDate, setAddUnitExpiryDate] = useState('');
+  const [addUnitLoading, setAddUnitLoading] = useState(false);
+
+  // Toast notifications + custom confirm modal
+  const { toasts, remove: removeToast, success: toastSuccess, error: toastError } = useToast();
+  const [confirmModal, setConfirmModal] = useState(null);
+  const askConfirm = (opts) => new Promise((resolve) => {
+    setConfirmModal({
+      title: opts.title || 'Are you sure?',
+      message: opts.message || '',
+      confirmText: opts.confirmText || 'Confirm',
+      cancelText: opts.cancelText || 'Cancel',
+      tone: opts.tone || 'primary', // 'primary' | 'danger'
+      onConfirm: () => { setConfirmModal(null); resolve(true); },
+      onCancel:  () => { setConfirmModal(null); resolve(false); },
+    });
+  });
 
   const [logs, setLogs] = useState([]);
   const [logsLoading, setLogsLoading] = useState(false);
@@ -76,6 +102,66 @@ function HospitalDashboard() {
   const [postForm, setPostForm] = useState({ bloodGroup: '', units: 1, urgency: 'normal', location: '', contactPhone: '', note: '' });
   const [postLoading, setPostLoading] = useState(false);
   const [postResult, setPostResult] = useState({ msg: '', type: '' });
+
+  // ── GPS hooks for location fields ─────────────────────────────────────────
+  const { getLocation: getGpsLoc } = useGeolocation();
+  const [postLocGpsLoading,   setPostLocGpsLoading]   = useState(false);
+  const [eventLocGpsLoading,  setEventLocGpsLoading]  = useState(false);
+  const [postLocGeoSuccess,   setPostLocGeoSuccess]   = useState(false);
+  const [eventLocGeoSuccess,  setEventLocGeoSuccess]  = useState(false);
+  const [postLocGeocoding,    setPostLocGeocoding]    = useState(false);
+  const [eventLocGeocoding,   setEventLocGeocoding]   = useState(false);
+  const [showPostLocMap,      setShowPostLocMap]      = useState(false);
+  const [showEventLocMap,     setShowEventLocMap]     = useState(false);
+  const [postPickedCoords,    setPostPickedCoords]    = useState(null);
+  const [eventPickedCoords,   setEventPickedCoords]   = useState(null);
+  const [showRequestsMap,     setShowRequestsMap]     = useState(false);
+
+  // Detect GPS and fill a location field; also captures coords
+  const detectAndFill = async (setLoading, setter, setSuccess, setGeocoding, setCoords) => {
+    setLoading(true);
+    setSuccess(false);
+    try {
+      const coords = await getGpsLoc();
+      if (setGeocoding) setGeocoding(true);
+      const label  = await reverseGeocode(coords.lat, coords.lng);
+      setter(label);
+      if (setCoords) setCoords(coords);
+      setSuccess(true);
+    } catch { /* silently ignore */ }
+    setLoading(false);
+    if (setGeocoding) setGeocoding(false);
+  };
+
+  // Map-pick handler for post request location
+  const handlePostLocMapPick = async (coords) => {
+    setPostPickedCoords(coords);
+    setPostLocGeocoding(true);
+    try {
+      const label = await reverseGeocode(coords.lat, coords.lng);
+      setPostForm(p => ({ ...p, location: label }));
+      setPostLocGeoSuccess(true);
+    } catch {
+      setPostForm(p => ({ ...p, location: `${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}` }));
+    } finally {
+      setPostLocGeocoding(false);
+    }
+  };
+
+  // Map-pick handler for event location
+  const handleEventLocMapPick = async (coords) => {
+    setEventPickedCoords(coords);
+    setEventLocGeocoding(true);
+    try {
+      const label = await reverseGeocode(coords.lat, coords.lng);
+      handleEventFormChange('location', label);
+      setEventLocGeoSuccess(true);
+    } catch {
+      handleEventFormChange('location', `${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}`);
+    } finally {
+      setEventLocGeocoding(false);
+    }
+  };
 
   // Edit / Cancel / Fulfill request state
   const [editModal, setEditModal] = useState(null);
@@ -119,7 +205,11 @@ function HospitalDashboard() {
   const [cancellingEventId, setCancellingEventId] = useState(null);
   const [completingEvent, setCompletingEvent] = useState(null); // event being marked complete
   const [completeForm, setCompleteForm] = useState({ unitsCollected: '', totalDonors: '', image: '', story: '', quote: '', quoteName: '' });
+  const [completeImageFile, setCompleteImageFile] = useState(null);
+  const [completeImagePreview, setCompleteImagePreview] = useState('');
   const [completeFormLoading, setCompleteFormLoading] = useState(false);
+  const [attendeesEvent, setAttendeesEvent] = useState(null); // event whose attendees we're viewing
+  const [attendeesSearch, setAttendeesSearch] = useState('');
   // ─────────────────────────────────────────────────────────────────────────
 
   const token = localStorage.getItem('token');
@@ -138,7 +228,7 @@ function HospitalDashboard() {
     }
 
     try {
-      const res = await axios.get(url, {
+      const res = await api.get(url, {
         ...options,
         headers: { 'x-auth-token': token, ...options.headers },
       });
@@ -211,7 +301,7 @@ function HospitalDashboard() {
     if (!isAuthenticated) return;
     setEventsLoading(true);
     try {
-      const res = await axios.get('/api/events/mine');
+      const res = await api.get('/api/events/mine');
       if (res.data?.success) setEvents(res.data.events || []);
     } catch (err) {
       console.error('Events fetch failed', err);
@@ -240,10 +330,10 @@ function HospitalDashboard() {
     try {
       const payload = { ...eventForm, targetDonors: Number(eventForm.targetDonors) || 0 };
       if (editingEvent) {
-        await axios.patch(`/api/events/${editingEvent._id}`, payload);
+        await api.patch(`/api/events/${editingEvent._id}`, payload);
         setEventFormResult({ msg: 'Event updated successfully!', type: 'success' });
       } else {
-        const res = await axios.post('/api/events', payload);
+        const res = await api.post('/api/events', payload);
         setEventFormResult({ msg: res.data.message || 'Event created!', type: 'success' });
       }
       setEventForm({ title: '', description: '', date: '', time: '', location: '', contactPhone: '', bloodGroupsNeeded: ['All'], targetDonors: '' });
@@ -258,13 +348,21 @@ function HospitalDashboard() {
   };
 
   const handleCancelEvent = async (eventId) => {
-    if (!window.confirm('Cancel this event? Donors and receivers will not be notified of the cancellation.')) return;
+    const ok = await askConfirm({
+      title: 'Cancel this event?',
+      message: 'Donors and receivers will not be notified of the cancellation.',
+      confirmText: 'Cancel Event',
+      cancelText: 'Keep Event',
+      tone: 'danger',
+    });
+    if (!ok) return;
     setCancellingEventId(eventId);
     try {
-      await axios.delete(`/api/events/${eventId}`);
+      await api.delete(`/api/events/${eventId}`);
       setEvents(prev => prev.map(ev => ev._id === eventId ? { ...ev, status: 'cancelled' } : ev));
+      toastSuccess('Event cancelled', 'The event has been marked as cancelled.');
     } catch (err) {
-      alert(err.response?.data?.message || 'Failed to cancel event.');
+      toastError('Could not cancel event', err.response?.data?.message || 'Failed to cancel event.');
     } finally {
       setCancellingEventId(null);
     }
@@ -285,25 +383,66 @@ function HospitalDashboard() {
     setShowEventForm(true);
     setEventFormResult({ msg: '', type: '' });
   };
+  const handleCompleteImageChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toastError('Invalid file', 'Please choose an image (jpg, png, webp, etc.).');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toastError('Image too large', 'Please upload an image under 5MB.');
+      return;
+    }
+    setCompleteImageFile(file);
+    const reader = new FileReader();
+    reader.onloadend = () => setCompleteImagePreview(reader.result);
+    reader.readAsDataURL(file);
+  };
+
+  const closeCompleteModal = () => {
+    setCompletingEvent(null);
+    setCompleteForm({ unitsCollected: '', totalDonors: '', image: '', story: '', quote: '', quoteName: '' });
+    setCompleteImageFile(null);
+    setCompleteImagePreview('');
+  };
+
   const handleMarkComplete = async (e) => {
     e.preventDefault();
     if (!completingEvent) return;
     setCompleteFormLoading(true);
     try {
-      await axios.patch(`/api/events/${completingEvent._id}`, {
-        status: 'completed',
-        unitsCollected: Number(completeForm.unitsCollected) || 0,
-        totalDonors: Number(completeForm.totalDonors) || 0,
-        image: completeForm.image,
-        story: completeForm.story,
-        quote: completeForm.quote,
-        quoteName: completeForm.quoteName,
-      });
-      setEvents(prev => prev.map(ev => ev._id === completingEvent._id ? { ...ev, status: 'completed', ...completeForm } : ev));
-      setCompletingEvent(null);
-      setCompleteForm({ unitsCollected: '', totalDonors: '', image: '', story: '', quote: '', quoteName: '' });
+      // Send as multipart/form-data so the cover image file (if any) is uploaded.
+      const fd = new FormData();
+      fd.append('status', 'completed');
+      fd.append('unitsCollected', Number(completeForm.unitsCollected) || 0);
+      fd.append('totalDonors', Number(completeForm.totalDonors) || 0);
+      fd.append('story', completeForm.story || '');
+      fd.append('quote', completeForm.quote || '');
+      fd.append('quoteName', completeForm.quoteName || '');
+      // If user picked a new file, upload it. Otherwise keep any existing URL/path.
+      if (completeImageFile) {
+        fd.append('image', completeImageFile);
+      } else if (completeForm.image) {
+        fd.append('image', completeForm.image);
+      }
+
+      const res = await api.patch(
+        `/api/events/${completingEvent._id}`,
+        fd,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      );
+
+      const updated = res.data?.event;
+      setEvents(prev => prev.map(ev =>
+        ev._id === completingEvent._id
+          ? (updated ? { ...ev, ...updated } : { ...ev, status: 'completed', ...completeForm })
+          : ev
+      ));
+      closeCompleteModal();
+      toastSuccess('Event completed', 'The event has been marked as completed.');
     } catch (err) {
-      alert(err.response?.data?.message || 'Failed to mark event as completed.');
+      toastError('Could not complete event', err.response?.data?.message || 'Failed to mark event as completed.');
     } finally {
       setCompleteFormLoading(false);
     }
@@ -336,7 +475,7 @@ function HospitalDashboard() {
     setAlertLoading(true);
     setAlertResult({ msg: '', type: '' });
     try {
-      const res = await axios.post('/api/blood/donors/alert', {
+      const res = await api.post('/api/blood/donors/alert', {
         bloodGroup: alertGroup,
         message: alertMessage.trim() || undefined,
         allDonors: alertIncludeCooldown,
@@ -356,53 +495,58 @@ function HospitalDashboard() {
   };
 
   useEffect(() => {
+    // Wait until AuthContext finishes initialising before making any auth decision
+    if (authLoading) return;
+
     if (!isAuthenticated) {
-      navigate('/login');
+      navigate('/login', { replace: true });
       return;
     }
 
-    if (user?.role === 'hospital') {
-      fetchInventory();
-    }
-  }, [user, token, navigate]);
+    fetchInventory();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, isAuthenticated, navigate]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    if (activePanel === 'history') {
+    if (activePanel === 'history' || activePanel === 'inventory') {
       fetchLogs();
-    }
-    if (activePanel === 'notifications') {
+    } else if (activePanel === 'notifications') {
       fetchNotifications();
-    }
-    if (activePanel === 'inventory') {
-      fetchLogs();
-    }
-    if (activePanel === 'donors') {
+    } else if (activePanel === 'donors') {
       fetchDonors(donorFilter);
-    }
-    if (activePanel === 'requests') {
+    } else if (activePanel === 'requests') {
       fetchAllRequests(requestFilter);
-    }
-    if (activePanel === 'events') {
+    } else if (activePanel === 'events') {
       fetchEvents();
     }
-  }, [activePanel, token]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activePanel, isAuthenticated]);
 
-  const handleUpdateInventory = async (bloodGroup, units, action) => {
+  const handleUpdateInventory = async (bloodGroup, units, action, customExpiryDate) => {
     if (!isAuthenticated || !bloodGroup || units <= 0) return;
 
     if (action === 'subtract') {
-      if (!window.confirm(`Remove ${units} units of ${bloodGroup}?`)) return;
+      const ok = await askConfirm({
+        title: `Remove ${units} unit${units > 1 ? 's' : ''} of ${bloodGroup}?`,
+        message: 'This will reduce the available stock for this blood group.',
+        confirmText: 'Remove',
+        cancelText: 'Cancel',
+        tone: 'danger',
+      });
+      if (!ok) return;
     }
 
+    const effectiveExpiryDate = customExpiryDate !== undefined ? customExpiryDate : expiryDate;
+
     try {
-      await axios.post('/api/blood/inventory', {
+      await api.post('/api/blood/inventory', {
         bloodGroup,
         units,
         action,
         reason: updateReason || undefined,
-        expiryDate: action === 'add' && expiryDate ? expiryDate : undefined,
+        expiryDate: action === 'add' && effectiveExpiryDate ? effectiveExpiryDate : undefined,
       }, {
         headers: { 'x-auth-token': token },
       });
@@ -410,7 +554,19 @@ function HospitalDashboard() {
       await fetchInventory();
       await fetchLogs();
 
-      alert(`Successfully ${action}ed ${units} units of ${bloodGroup}`);
+      if (action === 'add') {
+        toastSuccess(
+          `+${units} unit${units > 1 ? 's' : ''} of ${bloodGroup} added`,
+          effectiveExpiryDate
+            ? `Expires on ${new Date(effectiveExpiryDate).toLocaleDateString()}`
+            : 'Inventory updated successfully.'
+        );
+      } else {
+        toastSuccess(
+          `-${units} unit${units > 1 ? 's' : ''} of ${bloodGroup} removed`,
+          'Inventory updated successfully.'
+        );
+      }
 
       setSelectedGroup('');
       setUpdateUnits('');
@@ -421,18 +577,49 @@ function HospitalDashboard() {
         logout();
         navigate('/login');
       } else {
-        alert(err.response?.data?.message || 'Update failed');
+        toastError('Update failed', err.response?.data?.message || 'Could not update inventory.');
       }
+    }
+  };
+
+  const handleConfirmAddUnit = async () => {
+    if (!addUnitModal?.bloodGroup) return;
+    if (!addUnitExpiryDate) {
+      toastError('Expiry date required', 'Please select an expiry date for the unit being added.');
+      return;
+    }
+    // Block past dates
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const chosen = new Date(addUnitExpiryDate);
+    if (chosen < today) {
+      toastError('Invalid expiry date', 'Expiry date cannot be in the past.');
+      return;
+    }
+    setAddUnitLoading(true);
+    try {
+      await handleUpdateInventory(addUnitModal.bloodGroup, 1, 'add', addUnitExpiryDate);
+      setAddUnitModal(null);
+      setAddUnitExpiryDate('');
+    } finally {
+      setAddUnitLoading(false);
     }
   };
 
   const handleTransfer = async () => {
     if (!isAuthenticated || !transferGroup || transferUnits <= 0 || !receiverHospital) return;
 
-    if (!window.confirm(`Transfer ${transferUnits} units of ${transferGroup} to ${receiverHospital}?`)) return;
+    const ok = await askConfirm({
+      title: 'Send transfer request?',
+      message: `Transfer ${transferUnits} unit${transferUnits > 1 ? 's' : ''} of ${transferGroup} to ${receiverHospital}.`,
+      confirmText: 'Send Request',
+      cancelText: 'Cancel',
+      tone: 'primary',
+    });
+    if (!ok) return;
 
     try {
-      const response = await axios.post('/api/blood/transfer/create', {
+      const response = await api.post('/api/blood/transfer/create', {
         toHospitalEmail: receiverHospital,
         bloodGroup: transferGroup,
         units: parseInt(transferUnits),
@@ -442,7 +629,11 @@ function HospitalDashboard() {
       });
 
       if (response.data.success) {
-        alert(`✅ Transfer request sent to ${receiverHospital}\n\nAn email has been sent to the hospital. They have 7 days to accept or reject the transfer.`);
+        toastSuccess(
+          'Transfer request sent',
+          `An email was sent to ${receiverHospital}. They have 7 days to accept or reject.`,
+          6000
+        );
         setTransferGroup('');
         setTransferUnits('');
         setReceiverHospital('');
@@ -452,7 +643,7 @@ function HospitalDashboard() {
         logout();
         navigate('/login');
       } else {
-        alert(err.response?.data?.message || 'Transfer failed. Please check the hospital email.');
+        toastError('Transfer failed', err.response?.data?.message || 'Please check the hospital email and try again.');
       }
     }
   };
@@ -485,7 +676,7 @@ function HospitalDashboard() {
     setPostResult({ msg: '', type: '' });
     try {
       const hospitalName = user?.hospitalName || user?.username || 'Hospital';
-      const res = await axios.post('/api/blood/request', {
+      const res = await api.post('/api/blood/request', {
         ...postForm,
         hospital: hospitalName,
         location: postForm.location || hospitalName,
@@ -503,26 +694,42 @@ function HospitalDashboard() {
   };
 
   const handleCancelRequest = async (id) => {
-    if (!window.confirm('Cancel this blood request?')) return;
+    const ok = await askConfirm({
+      title: 'Cancel this blood request?',
+      message: 'The request will be marked as cancelled and removed from active listings.',
+      confirmText: 'Cancel Request',
+      cancelText: 'Keep Request',
+      tone: 'danger',
+    });
+    if (!ok) return;
     setActionLoading(id);
     try {
-      await axios.patch(`/api/blood/${id}/cancel`, {}, { headers: { 'x-auth-token': token } });
+      await api.patch(`/api/blood/${id}/cancel`, {}, { headers: { 'x-auth-token': token } });
       fetchAllRequests(requestFilter);
+      toastSuccess('Request cancelled', 'The blood request has been cancelled.');
     } catch (err) {
-      alert(err.response?.data?.message || 'Failed to cancel request.');
+      toastError('Could not cancel request', err.response?.data?.message || 'Failed to cancel request.');
     } finally {
       setActionLoading('');
     }
   };
 
   const handleFulfillRequest = async (id) => {
-    if (!window.confirm('Mark this request as fulfilled? This confirms the donor has delivered blood.')) return;
+    const ok = await askConfirm({
+      title: 'Mark request as fulfilled?',
+      message: 'This confirms the donor has delivered blood for this request.',
+      confirmText: 'Mark Fulfilled',
+      cancelText: 'Cancel',
+      tone: 'primary',
+    });
+    if (!ok) return;
     setActionLoading(id);
     try {
-      await axios.patch(`/api/blood/${id}/fulfill`, {}, { headers: { 'x-auth-token': token } });
+      await api.patch(`/api/blood/${id}/fulfill`, {}, { headers: { 'x-auth-token': token } });
       fetchAllRequests(requestFilter);
+      toastSuccess('Request fulfilled', 'The blood request has been marked as fulfilled.');
     } catch (err) {
-      alert(err.response?.data?.message || 'Failed to mark as fulfilled.');
+      toastError('Could not mark as fulfilled', err.response?.data?.message || 'Failed to mark as fulfilled.');
     } finally {
       setActionLoading('');
     }
@@ -546,7 +753,7 @@ function HospitalDashboard() {
     setEditLoading(true);
     setEditResult({ msg: '', type: '' });
     try {
-      await axios.patch(`/api/blood/${editModal._id}/edit`, editForm, { headers: { 'x-auth-token': token } });
+      await api.patch(`/api/blood/${editModal._id}/edit`, editForm, { headers: { 'x-auth-token': token } });
       setEditResult({ msg: 'Request updated successfully!', type: 'success' });
       fetchAllRequests(requestFilter);
       setTimeout(() => setEditModal(null), 1200);
@@ -579,7 +786,7 @@ function HospitalDashboard() {
     setAssignLoading(true);
     setAssignResult({ msg: '', type: '' });
     try {
-      const res = await axios.patch(
+      const res = await api.patch(
         `/api/blood/${assignModal._id}/assign-donor`,
         { donorId },
         { headers: { 'x-auth-token': token } }
@@ -617,15 +824,24 @@ function HospitalDashboard() {
     return new Date(date) < new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
   };
 
+  // Show spinner while AuthContext is still initialising (prevents flash of "Please Login")
+  if (authLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-white">
+        <div className="w-14 h-14 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-red-50 to-white">
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-white">
         <div className="text-center p-8 bg-white rounded-3xl shadow-xl">
-          <h2 className="text-3xl font-bold text-red-600 mb-4">Please Login</h2>
+          <h2 className="text-3xl font-bold text-blue-600 mb-4">Please Login</h2>
           <p className="text-lg text-gray-700 mb-6">You need to be logged in as a hospital user to access this dashboard.</p>
           <button
             onClick={() => navigate('/login')}
-            className="px-8 py-4 bg-red-600 text-white font-bold rounded-2xl hover:bg-red-700 transition"
+            className="px-8 py-4 bg-blue-600 text-white font-bold rounded-2xl hover:bg-blue-700 transition"
           >
             Go to Login
           </button>
@@ -635,27 +851,27 @@ function HospitalDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-red-50 via-rose-50 to-white flex">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-blue-50 to-white flex">
       <button
-        className="md:hidden fixed top-5 left-5 z-50 p-3 bg-white rounded-full shadow-lg hover:bg-red-50 transition"
+        className="md:hidden fixed top-5 left-5 z-50 p-3 bg-white rounded-full shadow-lg hover:bg-blue-50 transition"
         onClick={() => setSidebarOpen(!sidebarOpen)}
       >
-        {sidebarOpen ? <FaTimes className="text-2xl text-red-600" /> : <FaBars className="text-2xl text-red-600" />}
+        {sidebarOpen ? <FaTimes className="text-2xl text-blue-600" /> : <FaBars className="text-2xl text-blue-600" />}
       </button>
 
       <aside
         className={`fixed inset-y-0 left-0 z-40 w-72 bg-white/95 backdrop-blur-xl shadow-2xl transform ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-        } md:translate-x-0 transition-transform duration-500 ease-in-out border-r border-red-100`}
+        } md:translate-x-0 transition-transform duration-500 ease-in-out border-r border-blue-100`}
       >
-        <div className="p-8 border-b border-red-100">
+        <div className="p-8 border-b border-blue-100">
           <div className="flex items-center gap-4">
-            <div className="p-3 bg-red-100 rounded-2xl">
-              <FaHeartbeat className="text-4xl text-red-600 animate-heartbeat" />
+            <div className="p-3 bg-blue-100 rounded-2xl">
+              <FaHeartbeat className="text-4xl text-blue-600 animate-heartbeat" />
             </div>
             <div>
               <h1 className="text-3xl font-extrabold text-gray-900">BloodBridge</h1>
-              <p className="text-sm font-medium text-red-600">Hospital Portal</p>
+              <p className="text-sm font-medium text-blue-600">Hospital Portal</p>
             </div>
           </div>
           <p className="mt-6 text-base text-gray-700">
@@ -680,8 +896,8 @@ function HospitalDashboard() {
               }}
               className={`w-full flex items-center justify-between gap-4 px-6 py-4 rounded-2xl transition-all duration-300 ${
                 activePanel === item.key
-                  ? 'bg-red-50 text-red-700 font-semibold shadow-md'
-                  : 'text-gray-700 hover:bg-red-50 hover:text-red-700 hover:shadow-sm'
+                  ? 'bg-blue-50 text-blue-700 font-semibold shadow-md'
+                  : 'text-gray-700 hover:bg-blue-50 hover:text-blue-700 hover:shadow-sm'
               }`}
             >
               <div className="flex items-center gap-4">
@@ -691,7 +907,7 @@ function HospitalDashboard() {
             </button>
           ))}
 
-          <hr className="my-6 border-red-100" />
+          <hr className="my-6 border-blue-100" />
 
           <button
             onClick={() => {
@@ -704,9 +920,20 @@ function HospitalDashboard() {
             <span className="text-lg">Edit Profile</span>
           </button>
 
+          {/* Push notifications */}
+          {pushSupported && pushPermission !== 'granted' && (
+            <button
+              onClick={requestPush}
+              className="w-full flex items-center gap-4 px-6 py-4 rounded-2xl text-blue-600 hover:bg-blue-50 transition-all duration-300 font-medium"
+            >
+              <span className="text-2xl">🔔</span>
+              <span className="text-lg">Enable Alerts</span>
+            </button>
+          )}
+
           <button
             onClick={handleLogout}
-            className="w-full flex items-center gap-4 px-6 py-4 rounded-2xl text-red-600 hover:bg-red-50 transition-all duration-300 font-medium"
+            className="w-full flex items-center gap-4 px-6 py-4 rounded-2xl text-blue-600 hover:bg-blue-50 transition-all duration-300 font-medium"
           >
             <FaSignOutAlt className="text-2xl" />
             <span className="text-lg">Logout</span>
@@ -716,15 +943,15 @@ function HospitalDashboard() {
 
       <main className="flex-1 md:ml-72 p-6 md:p-10 pt-24 md:pt-10">
         {error && (
-          <div className="mb-10 p-8 bg-red-50 border-l-6 border-red-500 rounded-3xl shadow-xl">
+          <div className="mb-10 p-8 bg-blue-50 border-l-6 border-blue-500 rounded-3xl shadow-xl">
             <div className="flex items-start gap-6">
-              <FaExclamationTriangle className="text-5xl text-red-600 mt-1" />
+              <FaExclamationTriangle className="text-5xl text-blue-600 mt-1" />
               <div className="flex-1">
-                <h3 className="text-2xl font-bold text-red-800 mb-3">Something went wrong</h3>
-                <p className="text-red-700 text-lg mb-6">{error}</p>
+                <h3 className="text-2xl font-bold text-blue-800 mb-3">Something went wrong</h3>
+                <p className="text-blue-700 text-lg mb-6">{error}</p>
                 <button
                   onClick={() => window.location.reload()}
-                  className="inline-flex items-center gap-3 px-8 py-4 bg-red-600 text-white rounded-2xl hover:bg-red-700 transition-all duration-300 shadow-lg hover:shadow-xl hover:scale-[1.02]"
+                  className="inline-flex items-center gap-3 px-8 py-4 bg-blue-600 text-white rounded-2xl hover:bg-blue-700 transition-all duration-300 shadow-lg hover:shadow-xl hover:scale-[1.02]"
                 >
                   <FaRedo className="text-xl" />
                   Try Again
@@ -736,27 +963,27 @@ function HospitalDashboard() {
 
         {loading && activePanel === 'inventory' ? (
           <div className="flex flex-col items-center justify-center min-h-[60vh]">
-            <FaSpinner className="text-6xl text-red-600 animate-spin mb-6" />
+            <FaSpinner className="text-6xl text-blue-600 animate-spin mb-6" />
             <p className="text-xl font-medium text-gray-700">Loading hospital inventory...</p>
           </div>
         ) : (
           <div className="space-y-12">
             <h2 className="text-4xl md:text-5xl font-extrabold text-gray-900">
-              Welcome back, <span className="text-red-600">{user?.hospitalName || user?.username || 'Hospital'}</span>
+              Welcome back, <span className="text-blue-600">{user?.hospitalName || user?.username || 'Hospital'}</span>
             </h2>
 
             {activePanel === 'inventory' && (
               <div className="space-y-12">
                 <div className="grid md:grid-cols-5 gap-8">
-                  <div className="bg-white p-8 rounded-3xl shadow-xl border border-red-100 hover:shadow-2xl transition-all duration-300">
+                  <div className="bg-white p-8 rounded-3xl shadow-xl border border-blue-100 hover:shadow-2xl transition-all duration-300">
                     <h3 className="text-xl font-semibold text-gray-700 mb-4">Total Units</h3>
-                    <div className="text-5xl font-extrabold text-red-600">
+                    <div className="text-5xl font-extrabold text-blue-600">
                       {inventory.reduce((sum, i) => sum + i.units, 0)}
                     </div>
                     <p className="text-lg text-gray-600 mt-3">In Stock</p>
                   </div>
 
-                  <div className="bg-white p-8 rounded-3xl shadow-xl border border-red-100 hover:shadow-2xl transition-all duration-300">
+                  <div className="bg-white p-8 rounded-3xl shadow-xl border border-blue-100 hover:shadow-2xl transition-all duration-300">
                     <h3 className="text-xl font-semibold text-gray-700 mb-4">Low Stock</h3>
                     <div className="text-5xl font-extrabold text-yellow-600">
                       {inventory.filter(i => i.units > 0 && i.units < 10).length}
@@ -764,9 +991,9 @@ function HospitalDashboard() {
                     <p className="text-lg text-gray-600 mt-3">Groups Need Attention</p>
                   </div>
 
-                  <div className="bg-white p-8 rounded-3xl shadow-xl border border-red-100 hover:shadow-2xl transition-all duration-300">
+                  <div className="bg-white p-8 rounded-3xl shadow-xl border border-blue-100 hover:shadow-2xl transition-all duration-300">
                     <h3 className="text-xl font-semibold text-gray-700 mb-4">Critical</h3>
-                    <div className="text-5xl font-extrabold text-red-600">
+                    <div className="text-5xl font-extrabold text-blue-600">
                       {inventory.filter(i => i.units === 0).length}
                     </div>
                     <p className="text-lg text-gray-600 mt-3">Out of Stock</p>
@@ -843,7 +1070,10 @@ function HospitalDashboard() {
 
                         <div className="flex gap-4">
                           <button
-                            onClick={() => handleUpdateInventory(group, 1, 'add')}
+                            onClick={() => {
+                              setAddUnitExpiryDate('');
+                              setAddUnitModal({ bloodGroup: group });
+                            }}
                             className="flex-1 py-4 bg-green-600 text-white rounded-2xl hover:bg-green-700 transition text-lg font-medium shadow-md hover:shadow-lg"
                           >
                             +1 Unit
@@ -854,7 +1084,7 @@ function HospitalDashboard() {
                             className={`flex-1 py-4 rounded-2xl text-lg font-medium transition shadow-md ${
                               item.units <= 0
                                 ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                                : 'bg-red-600 text-white hover:bg-red-700'
+                                : 'bg-blue-600 text-white hover:bg-blue-700'
                             }`}
                           >
                             -1 Unit
@@ -865,9 +1095,9 @@ function HospitalDashboard() {
                   })}
                 </div>
 
-                <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-8 mt-12">
+                <div className="bg-white rounded-3xl shadow-xl border border-blue-100 p-8 mt-12">
                   <h3 className="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-4">
-                    <FaExchangeAlt className="text-red-600" />
+                    <FaExchangeAlt className="text-blue-600" />
                     Transfer Blood to Another Hospital
                   </h3>
 
@@ -875,7 +1105,7 @@ function HospitalDashboard() {
                     <select
                       value={transferGroup || ''}
                       onChange={(e) => setTransferGroup(e.target.value)}
-                      className="p-5 border border-red-200 rounded-2xl focus:ring-4 focus:ring-red-100 outline-none text-lg bg-white/70"
+                      className="p-5 border border-blue-200 rounded-2xl focus:ring-4 focus:ring-blue-100 outline-none text-lg bg-white/70"
                     >
                       <option value="">Select Blood Group</option>
                       {['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'].map(g => (
@@ -889,7 +1119,7 @@ function HospitalDashboard() {
                       min="1"
                       value={transferUnits}
                       onChange={(e) => setTransferUnits(e.target.value ? Number(e.target.value) : '')}
-                      className="p-5 border border-red-200 rounded-2xl focus:ring-4 focus:ring-red-100 outline-none text-lg bg-white/70"
+                      className="p-5 border border-blue-200 rounded-2xl focus:ring-4 focus:ring-blue-100 outline-none text-lg bg-white/70"
                     />
 
                     <input
@@ -897,22 +1127,22 @@ function HospitalDashboard() {
                       placeholder="Receiver Hospital Name / Email"
                       value={receiverHospital}
                       onChange={(e) => setReceiverHospital(e.target.value)}
-                      className="p-5 border border-red-200 rounded-2xl focus:ring-4 focus:ring-red-100 outline-none text-lg bg-white/70 md:col-span-2"
+                      className="p-5 border border-blue-200 rounded-2xl focus:ring-4 focus:ring-blue-100 outline-none text-lg bg-white/70 md:col-span-2"
                     />
 
                     <button
                       onClick={handleTransfer}
                       disabled={!transferGroup || transferUnits <= 0 || !receiverHospital}
-                      className="md:col-span-4 py-5 px-10 bg-red-600 text-white font-bold rounded-2xl hover:bg-red-700 disabled:opacity-60 transition shadow-lg hover:shadow-xl text-lg"
+                      className="md:col-span-4 py-5 px-10 bg-blue-600 text-white font-bold rounded-2xl hover:bg-blue-700 disabled:opacity-60 transition shadow-lg hover:shadow-xl text-lg"
                     >
                       Send Transfer Request
                     </button>
                   </div>
                 </div>
 
-                <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-10 mt-12">
+                <div className="bg-white rounded-3xl shadow-xl border border-blue-100 p-10 mt-12">
                   <h3 className="text-3xl font-bold text-gray-900 mb-8 flex items-center gap-4">
-                    <FaTint className="text-red-600 text-4xl" />
+                    <FaTint className="text-blue-600 text-4xl" />
                     Bulk Inventory Update
                   </h3>
 
@@ -920,7 +1150,7 @@ function HospitalDashboard() {
                     <select
                       value={selectedGroup || ''}
                       onChange={(e) => setSelectedGroup(e.target.value)}
-                      className="p-5 border border-red-200 rounded-2xl focus:ring-4 focus:ring-red-100 outline-none text-lg bg-white/70"
+                      className="p-5 border border-blue-200 rounded-2xl focus:ring-4 focus:ring-blue-100 outline-none text-lg bg-white/70"
                     >
                       <option value="">Select Blood Group</option>
                       {['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'].map(g => (
@@ -934,14 +1164,14 @@ function HospitalDashboard() {
                       min="1"
                       value={updateUnits}
                       onChange={(e) => setUpdateUnits(e.target.value ? Number(e.target.value) : '')}
-                      className="p-5 border border-red-200 rounded-2xl focus:ring-4 focus:ring-red-100 outline-none text-lg bg-white/70"
+                      className="p-5 border border-blue-200 rounded-2xl focus:ring-4 focus:ring-blue-100 outline-none text-lg bg-white/70"
                     />
 
                     <input
                       type="date"
                       value={expiryDate}
                       onChange={(e) => setExpiryDate(e.target.value)}
-                      className="p-5 border border-red-200 rounded-2xl focus:ring-4 focus:ring-red-100 outline-none text-lg bg-white/70"
+                      className="p-5 border border-blue-200 rounded-2xl focus:ring-4 focus:ring-blue-100 outline-none text-lg bg-white/70"
                     />
 
                     <input
@@ -949,7 +1179,7 @@ function HospitalDashboard() {
                       placeholder="Reason (e.g. restock, emergency, transfer)"
                       value={updateReason}
                       onChange={(e) => setUpdateReason(e.target.value)}
-                      className="p-5 border border-red-200 rounded-2xl focus:ring-4 focus:ring-red-100 outline-none text-lg bg-white/70 md:col-span-2"
+                      className="p-5 border border-blue-200 rounded-2xl focus:ring-4 focus:ring-blue-100 outline-none text-lg bg-white/70 md:col-span-2"
                     />
 
                     <div className="flex gap-4 md:col-span-5">
@@ -972,7 +1202,7 @@ function HospitalDashboard() {
                           }
                         }}
                         disabled={!selectedGroup || updateUnits <= 0}
-                        className="flex-1 py-5 px-10 bg-red-600 text-white font-bold rounded-2xl hover:bg-red-700 disabled:opacity-60 transition shadow-lg hover:shadow-xl text-lg"
+                        className="flex-1 py-5 px-10 bg-blue-600 text-white font-bold rounded-2xl hover:bg-blue-700 disabled:opacity-60 transition shadow-lg hover:shadow-xl text-lg"
                       >
                         Remove Units
                       </button>
@@ -983,15 +1213,15 @@ function HospitalDashboard() {
             )}
 
             {activePanel === 'history' && (
-              <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-10">
+              <div className="bg-white rounded-3xl shadow-xl border border-blue-100 p-10">
                 <h3 className="text-4xl font-bold text-gray-900 mb-8 flex items-center gap-4">
-                  <FaHistory className="text-red-600" />
+                  <FaHistory className="text-blue-600" />
                   Activity History
                 </h3>
 
                 {logsLoading ? (
                   <div className="flex justify-center py-12">
-                    <FaSpinner className="text-5xl text-red-600 animate-spin" />
+                    <FaSpinner className="text-5xl text-blue-600 animate-spin" />
                   </div>
                 ) : logs.length === 0 ? (
                   <p className="text-xl text-gray-600 text-center py-12">No activity recorded yet.</p>
@@ -1002,7 +1232,7 @@ function HospitalDashboard() {
                         key={log._id}
                         className={`p-6 rounded-2xl border ${
                           log.action === 'add' ? 'bg-green-50 border-green-200' :
-                          log.action === 'subtract' ? 'bg-red-50 border-red-200' :
+                          log.action === 'subtract' ? 'bg-blue-50 border-blue-200' :
                           'bg-purple-50 border-purple-200'
                         }`}
                       >
@@ -1044,8 +1274,8 @@ function HospitalDashboard() {
                 <div className="flex items-center justify-between flex-wrap gap-4">
                   <div>
                     <h3 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
-                      <span className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center">
-                        <FaCalendarPlus className="text-red-600 text-lg" />
+                      <span className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center">
+                        <FaCalendarPlus className="text-blue-600 text-lg" />
                       </span>
                       Host Blood Donation Drive
                     </h3>
@@ -1053,7 +1283,7 @@ function HospitalDashboard() {
                   </div>
                   <button
                     onClick={() => { setShowEventForm(v => !v); setEditingEvent(null); setEventForm({ title: '', description: '', date: '', time: '', location: '', contactPhone: '', bloodGroupsNeeded: ['All'], targetDonors: '' }); setEventFormResult({ msg: '', type: '' }); }}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-bold rounded-xl transition shadow-sm"
+                    className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-xl transition shadow-sm"
                   >
                     <FaCalendarPlus />
                     {showEventForm ? 'Close Form' : 'Create Event'}
@@ -1062,14 +1292,14 @@ function HospitalDashboard() {
 
                 {/* Create / Edit Form */}
                 {showEventForm && (
-                  <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-8">
+                  <div className="bg-white rounded-3xl shadow-xl border border-blue-100 p-8">
                     <h4 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2">
-                      <FaCalendarAlt className="text-red-500" />
+                      <FaCalendarAlt className="text-blue-500" />
                       {editingEvent ? 'Edit Event' : 'New Blood Donation Drive'}
                     </h4>
 
                     {eventFormResult.msg && (
-                      <div className={`mb-5 p-4 rounded-xl text-sm font-medium flex items-center gap-2 ${eventFormResult.type === 'success' ? 'bg-green-50 border border-green-200 text-green-700' : 'bg-red-50 border border-red-200 text-red-700'}`}>
+                      <div className={`mb-5 p-4 rounded-xl text-sm font-medium flex items-center gap-2 ${eventFormResult.type === 'success' ? 'bg-green-50 border border-green-200 text-green-700' : 'bg-blue-50 border border-blue-200 text-blue-700'}`}>
                         {eventFormResult.type === 'success' ? <FaCheckCircle /> : <FaTimesCircle />}
                         {eventFormResult.msg}
                       </div>
@@ -1078,14 +1308,14 @@ function HospitalDashboard() {
                     <form onSubmit={handleCreateEvent} className="space-y-5">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                         <div className="md:col-span-2">
-                          <label className="block text-sm font-semibold text-gray-700 mb-1">Event Title <span className="text-red-500">*</span></label>
+                          <label className="block text-sm font-semibold text-gray-700 mb-1">Event Title <span className="text-blue-500">*</span></label>
                           <input
                             type="text"
                             value={eventForm.title}
                             onChange={e => handleEventFormChange('title', e.target.value)}
                             placeholder="e.g. World Blood Donor Day Drive 2025"
                             required
-                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
+                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
                           />
                         </div>
                         <div className="md:col-span-2">
@@ -1095,41 +1325,114 @@ function HospitalDashboard() {
                             onChange={e => handleEventFormChange('description', e.target.value)}
                             rows={3}
                             placeholder="Tell donors what this event is about..."
-                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-300 resize-none"
+                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 resize-none"
                           />
                         </div>
                         <div>
-                          <label className="block text-sm font-semibold text-gray-700 mb-1">Date <span className="text-red-500">*</span></label>
+                          <label className="block text-sm font-semibold text-gray-700 mb-1">Date <span className="text-blue-500">*</span></label>
                           <input
                             type="date"
                             value={eventForm.date}
                             onChange={e => handleEventFormChange('date', e.target.value)}
                             min={new Date().toISOString().slice(0,10)}
                             required
-                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
+                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
                           />
                         </div>
                         <div>
-                          <label className="block text-sm font-semibold text-gray-700 mb-1">Time <span className="text-red-500">*</span></label>
+                          <label className="block text-sm font-semibold text-gray-700 mb-1">Time <span className="text-blue-500">*</span></label>
                           <input
                             type="text"
                             value={eventForm.time}
                             onChange={e => handleEventFormChange('time', e.target.value)}
                             placeholder="e.g. 9:00 AM – 4:00 PM"
                             required
-                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
+                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
                           />
                         </div>
                         <div>
-                          <label className="block text-sm font-semibold text-gray-700 mb-1">Location <span className="text-red-500">*</span></label>
-                          <input
-                            type="text"
-                            value={eventForm.location}
-                            onChange={e => handleEventFormChange('location', e.target.value)}
-                            placeholder="e.g. Tribhuvan University Teaching Hospital, KTM"
-                            required
-                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
-                          />
+                          <label className="block text-sm font-semibold text-gray-700 mb-1">
+                            Location <span className="text-blue-500">*</span>
+                            <span className="ml-1 text-blue-400 text-xs font-normal">(click 📍 to detect)</span>
+                          </label>
+                          <div className="relative">
+                            <button
+                              type="button"
+                              onClick={() => detectAndFill(setEventLocGpsLoading, (v) => handleEventFormChange('location', v), setEventLocGeoSuccess, setEventLocGeocoding, setEventPickedCoords)}
+                              disabled={eventLocGpsLoading || eventLocGeocoding}
+                              className="absolute left-3 top-1/2 -translate-y-1/2 z-10 group disabled:cursor-not-allowed"
+                              title="Detect live location"
+                            >
+                              {eventLocGpsLoading || eventLocGeocoding
+                                ? <span className="w-3.5 h-3.5 border border-blue-400 border-t-transparent rounded-full animate-spin inline-block" />
+                                : eventLocGeoSuccess
+                                  ? <span className="text-green-500 text-sm">📍</span>
+                                  : <span className="text-gray-400 group-hover:text-blue-500 group-hover:scale-125 transition-all text-sm">📍</span>
+                              }
+                            </button>
+                            <input
+                              type="text"
+                              value={eventForm.location}
+                              onChange={e => { handleEventFormChange('location', e.target.value); setEventLocGeoSuccess(false); }}
+                              placeholder="Click 📍 or type venue…"
+                              required
+                              className={`w-full pl-9 pr-4 py-3 border rounded-xl text-sm focus:outline-none focus:ring-2 ${
+                                eventLocGeoSuccess
+                                  ? 'border-green-400 focus:ring-green-200'
+                                  : 'border-gray-200 focus:ring-blue-300'
+                              }`}
+                            />
+                          </div>
+
+                          {/* Status + map toggle */}
+                          {(eventLocGpsLoading || eventLocGeocoding) && (
+                            <p className="mt-1 text-xs text-blue-500 flex items-center gap-1">
+                              <span className="w-2.5 h-2.5 border border-blue-400 border-t-transparent rounded-full animate-spin inline-block" />
+                              {eventLocGeocoding ? 'Looking up address…' : 'Detecting…'}
+                            </p>
+                          )}
+                          {eventLocGeoSuccess && !eventLocGpsLoading && !eventLocGeocoding && (
+                            <p className="mt-1 text-xs text-green-600 font-medium">✅ Location detected</p>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setShowEventLocMap(m => !m)}
+                            className="mt-1.5 flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-800 transition-colors"
+                          >
+                            🗺️ {showEventLocMap ? 'Hide Map' : 'Pick on map'}
+                          </button>
+                          {showEventLocMap && (
+                            <div className="mt-2 rounded-xl overflow-hidden border border-blue-200 shadow-sm">
+                              <Suspense fallback={<div style={{height:"260px",display:"flex",alignItems:"center",justifyContent:"center",background:"#fef2f2"}}><div style={{width:28,height:28,border:"4px solid #fecaca",borderTopColor:"#dc2626",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/></div>}>
+                              <MapPicker
+                                height="220px"
+                                center={
+                                  eventPickedCoords
+                                    ? [eventPickedCoords.lat, eventPickedCoords.lng]
+                                    : [27.7172, 85.3240]
+                                }
+                                zoom={13}
+                                pickedLocation={eventPickedCoords}
+                                onLocationPick={handleEventLocMapPick}
+                                markers={
+                                  eventPickedCoords
+                                    ? [{
+                                        id: 'event-loc',
+                                        lat: eventPickedCoords.lat,
+                                        lng: eventPickedCoords.lng,
+                                        type: 'hospital',
+                                        label: eventForm.title || 'Event Location',
+                                        subLabel: eventForm.location || '',
+                                      }]
+                                    : []
+                                }
+                              />
+                              </Suspense>
+                              <p className="text-xs text-center text-gray-500 py-1.5 bg-gray-50 border-t border-blue-100">
+                                Click to pin the event venue
+                              </p>
+                            </div>
+                          )}
                         </div>
                         <div>
                           <label className="block text-sm font-semibold text-gray-700 mb-1">Contact Phone</label>
@@ -1138,7 +1441,7 @@ function HospitalDashboard() {
                             value={eventForm.contactPhone}
                             onChange={e => handleEventFormChange('contactPhone', e.target.value)}
                             placeholder="+977 98XXXXXXXX"
-                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
+                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
                           />
                         </div>
                         <div>
@@ -1149,7 +1452,7 @@ function HospitalDashboard() {
                             value={eventForm.targetDonors}
                             onChange={e => handleEventFormChange('targetDonors', e.target.value)}
                             placeholder="e.g. 100"
-                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-red-300"
+                            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
                           />
                         </div>
                         <div className="md:col-span-2">
@@ -1162,8 +1465,8 @@ function HospitalDashboard() {
                                 onClick={() => toggleBloodGroup(group)}
                                 className={`px-4 py-2 rounded-xl text-sm font-semibold border transition ${
                                   eventForm.bloodGroupsNeeded.includes(group)
-                                    ? 'bg-red-600 text-white border-red-600 shadow'
-                                    : 'bg-white text-gray-600 border-gray-200 hover:border-red-300'
+                                    ? 'bg-blue-600 text-white border-blue-600 shadow'
+                                    : 'bg-white text-gray-600 border-gray-200 hover:border-blue-300'
                                 }`}
                               >
                                 {group}
@@ -1177,7 +1480,7 @@ function HospitalDashboard() {
                         <button
                           type="submit"
                           disabled={eventFormLoading}
-                          className="flex items-center gap-2 px-6 py-3 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition disabled:opacity-60"
+                          className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition disabled:opacity-60"
                         >
                           {eventFormLoading ? <FaSpinner className="animate-spin" /> : <FaCalendarPlus />}
                           {editingEvent ? 'Update Event' : 'Create & Notify All'}
@@ -1197,11 +1500,11 @@ function HospitalDashboard() {
                 {/* Events List */}
                 {eventsLoading ? (
                   <div className="flex justify-center py-12">
-                    <FaSpinner className="text-5xl text-red-600 animate-spin" />
+                    <FaSpinner className="text-5xl text-blue-600 animate-spin" />
                   </div>
                 ) : events.length === 0 ? (
-                  <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-16 text-center">
-                    <FaCalendarAlt className="text-8xl text-red-100 mx-auto mb-6" />
+                  <div className="bg-white rounded-3xl shadow-xl border border-blue-100 p-16 text-center">
+                    <FaCalendarAlt className="text-8xl text-blue-100 mx-auto mb-6" />
                     <p className="text-2xl font-bold text-gray-700 mb-2">No events yet</p>
                     <p className="text-gray-500">Create your first blood donation drive — all donors and receivers will be notified.</p>
                   </div>
@@ -1213,15 +1516,15 @@ function HospitalDashboard() {
                         upcoming: 'bg-blue-100 text-blue-700',
                         ongoing: 'bg-green-100 text-green-700',
                         completed: 'bg-gray-100 text-gray-600',
-                        cancelled: 'bg-red-100 text-red-600',
+                        cancelled: 'bg-blue-100 text-blue-600',
                       }[ev.status] || 'bg-gray-100 text-gray-600';
 
                       return (
-                        <div key={ev._id} className={`bg-white rounded-2xl shadow-md border p-6 flex flex-col md:flex-row gap-5 ${ev.status === 'cancelled' ? 'opacity-60 border-gray-200' : 'border-red-100'}`}>
+                        <div key={ev._id} className={`bg-white rounded-2xl shadow-md border p-6 flex flex-col md:flex-row gap-5 ${ev.status === 'cancelled' ? 'opacity-60 border-gray-200' : 'border-blue-100'}`}>
                           {/* Date badge */}
-                          <div className="flex-shrink-0 flex flex-col items-center justify-center w-20 h-20 bg-red-50 rounded-2xl border border-red-100">
-                            <span className="text-xs font-bold text-red-400 uppercase">{new Date(ev.date).toLocaleString('en', { month: 'short' })}</span>
-                            <span className="text-3xl font-extrabold text-red-600">{new Date(ev.date).getDate()}</span>
+                          <div className="flex-shrink-0 flex flex-col items-center justify-center w-20 h-20 bg-blue-50 rounded-2xl border border-blue-100">
+                            <span className="text-xs font-bold text-blue-400 uppercase">{new Date(ev.date).toLocaleString('en', { month: 'short' })}</span>
+                            <span className="text-3xl font-extrabold text-blue-600">{new Date(ev.date).getDate()}</span>
                             <span className="text-xs text-gray-500">{new Date(ev.date).getFullYear()}</span>
                           </div>
 
@@ -1233,18 +1536,24 @@ function HospitalDashboard() {
                             </div>
                             {ev.description && <p className="text-sm text-gray-500 mt-1 line-clamp-2">{ev.description}</p>}
                             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-gray-600">
-                              <span className="flex items-center gap-1"><FaClock className="text-red-400" />{ev.time}</span>
-                              <span className="flex items-center gap-1"><FaMapMarkerAlt className="text-red-400" />{ev.location}</span>
-                              {ev.contactPhone && <span className="flex items-center gap-1"><FaPhone className="text-red-400" />{ev.contactPhone}</span>}
+                              <span className="flex items-center gap-1"><FaClock className="text-blue-400" />{ev.time}</span>
+                              <span className="flex items-center gap-1"><FaMapMarkerAlt className="text-blue-400" />{ev.location}</span>
+                              {ev.contactPhone && <span className="flex items-center gap-1"><FaPhone className="text-blue-400" />{ev.contactPhone}</span>}
                             </div>
                             <div className="mt-3 flex flex-wrap gap-2 items-center">
                               {ev.bloodGroupsNeeded?.map(g => (
-                                <span key={g} className="px-2 py-0.5 bg-red-50 border border-red-200 text-red-700 rounded-lg text-xs font-bold">{g}</span>
+                                <span key={g} className="px-2 py-0.5 bg-blue-50 border border-blue-200 text-blue-700 rounded-lg text-xs font-bold">{g}</span>
                               ))}
-                              <span className="text-xs text-gray-400 ml-2">
+                              <button
+                                type="button"
+                                onClick={() => { setAttendeesEvent(ev); setAttendeesSearch(''); }}
+                                className="text-xs text-blue-600 hover:text-blue-700 hover:underline font-medium ml-2 flex items-center gap-1"
+                                title="View attendee details"
+                              >
+                                <FaUserGroup className="text-xs" />
                                 {ev.rsvps?.filter(r => r.status === 'attending').length || 0} attending
                                 {ev.targetDonors > 0 && ` / ${ev.targetDonors} target`}
-                              </span>
+                              </button>
                               {ev.notifiedCount > 0 && (
                                 <span className="text-xs text-green-600 flex items-center gap-1 ml-1"><FaEnvelope />{ev.notifiedCount} emailed</span>
                               )}
@@ -1255,13 +1564,31 @@ function HospitalDashboard() {
                           {ev.status !== 'cancelled' && ev.status !== 'completed' && (
                             <div className="flex flex-col gap-2 flex-shrink-0">
                               <button
+                                onClick={() => { setAttendeesEvent(ev); setAttendeesSearch(''); }}
+                                className="flex items-center gap-2 px-4 py-2 border border-purple-200 text-purple-700 rounded-xl hover:bg-purple-50 transition text-sm font-medium"
+                              >
+                                <FaUserGroup className="text-purple-500" /> View Attendees
+                              </button>
+                              <button
                                 onClick={() => handleEditEvent(ev)}
                                 className="flex items-center gap-2 px-4 py-2 border border-gray-200 text-gray-700 rounded-xl hover:bg-gray-50 transition text-sm font-medium"
                               >
                                 <FaEdit className="text-blue-500" /> Edit
                               </button>
                               <button
-                                onClick={() => { setCompletingEvent(ev); setCompleteForm({ unitsCollected: ev.targetDonors || '', totalDonors: '', image: '', story: '', quote: '', quoteName: '' }); }}
+                                onClick={() => {
+                                  setCompletingEvent(ev);
+                                  setCompleteForm({
+                                    unitsCollected: ev.targetDonors || '',
+                                    totalDonors: '',
+                                    image: ev.image || '',
+                                    story: ev.story || '',
+                                    quote: ev.quote || '',
+                                    quoteName: ev.quoteName || '',
+                                  });
+                                  setCompleteImageFile(null);
+                                  setCompleteImagePreview('');
+                                }}
                                 className="flex items-center gap-2 px-4 py-2 border border-green-200 text-green-700 rounded-xl hover:bg-green-50 transition text-sm font-medium"
                               >
                                 <FaCheckCircle className="text-green-500" /> Mark Complete
@@ -1269,7 +1596,7 @@ function HospitalDashboard() {
                               <button
                                 onClick={() => handleCancelEvent(ev._id)}
                                 disabled={cancellingEventId === ev._id}
-                                className="flex items-center gap-2 px-4 py-2 border border-red-200 text-red-600 rounded-xl hover:bg-red-50 transition text-sm font-medium disabled:opacity-60"
+                                className="flex items-center gap-2 px-4 py-2 border border-blue-200 text-blue-600 rounded-xl hover:bg-blue-50 transition text-sm font-medium disabled:opacity-60"
                               >
                                 {cancellingEventId === ev._id ? <FaSpinner className="animate-spin" /> : <FaBan />} Cancel
                               </button>
@@ -1318,14 +1645,61 @@ function HospitalDashboard() {
                       </div>
                     </div>
                     <div>
-                      <label className="block text-sm font-semibold text-gray-700 mb-1">Cover Image URL <span className="text-gray-400 font-normal">(optional)</span></label>
-                      <input
-                        type="url"
-                        value={completeForm.image}
-                        onChange={e => setCompleteForm(f => ({ ...f, image: e.target.value }))}
-                        placeholder="https://..."
-                        className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-300"
-                      />
+                      <label className="block text-sm font-semibold text-gray-700 mb-1">
+                        Event Cover Photo <span className="text-gray-400 font-normal">(optional, max 5MB)</span>
+                      </label>
+
+                      {(completeImagePreview || completeForm.image) ? (
+                        <div className="relative rounded-2xl overflow-hidden border border-gray-200 bg-gray-50 group">
+                          <img
+                            src={completeImagePreview || completeForm.image}
+                            alt="Event cover preview"
+                            className="w-full h-48 object-cover"
+                          />
+                          <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition flex items-center justify-center gap-2 opacity-0 group-hover:opacity-100">
+                            <label className="cursor-pointer px-4 py-2 bg-white/90 hover:bg-white text-gray-800 rounded-xl text-sm font-semibold shadow-md">
+                              Change
+                              <input
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                onChange={handleCompleteImageChange}
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCompleteImageFile(null);
+                                setCompleteImagePreview('');
+                                setCompleteForm(f => ({ ...f, image: '' }));
+                              }}
+                              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-semibold shadow-md flex items-center gap-1.5"
+                            >
+                              <FaTrash className="text-xs" /> Remove
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <label className="flex flex-col items-center justify-center w-full h-40 border-2 border-dashed border-gray-300 rounded-2xl cursor-pointer bg-gray-50 hover:bg-green-50 hover:border-green-400 transition">
+                          <div className="flex flex-col items-center justify-center text-gray-500">
+                            <FaPlusCircle className="text-3xl text-green-500 mb-2" />
+                            <p className="text-sm font-semibold">Click to upload photo</p>
+                            <p className="text-xs text-gray-400 mt-0.5">PNG, JPG, WEBP up to 5MB</p>
+                          </div>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            onChange={handleCompleteImageChange}
+                          />
+                        </label>
+                      )}
+                      {completeImageFile && (
+                        <p className="text-xs text-gray-500 mt-2">
+                          Selected: <span className="font-medium text-gray-700">{completeImageFile.name}</span>
+                          {' · '}{(completeImageFile.size / 1024).toFixed(0)} KB
+                        </p>
+                      )}
                     </div>
                     <div>
                       <label className="block text-sm font-semibold text-gray-700 mb-1">Event Story <span className="text-gray-400 font-normal">(optional)</span></label>
@@ -1368,7 +1742,7 @@ function HospitalDashboard() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => setCompletingEvent(null)}
+                        onClick={closeCompleteModal}
                         className="px-6 py-3 border border-gray-200 text-gray-600 rounded-xl hover:bg-gray-50 transition text-sm"
                       >
                         Cancel
@@ -1381,19 +1755,19 @@ function HospitalDashboard() {
             {/* ── END EVENTS PANEL ────────────────────────────────────────────────── */}
 
             {activePanel === 'notifications' && (
-              <div className="bg-white rounded-3xl shadow-xl border border-red-100 p-10">
+              <div className="bg-white rounded-3xl shadow-xl border border-blue-100 p-10">
                 <h3 className="text-4xl font-bold text-gray-900 mb-8 flex items-center gap-4">
-                  <FaBell className="text-red-600 animate-pulse" />
+                  <FaBell className="text-blue-600 animate-pulse" />
                   Notifications & Alerts
                 </h3>
 
                 {notificationsLoading ? (
                   <div className="flex justify-center py-12">
-                    <FaSpinner className="text-5xl text-red-600 animate-spin" />
+                    <FaSpinner className="text-5xl text-blue-600 animate-spin" />
                   </div>
                 ) : notifications.length === 0 ? (
                   <div className="text-center py-16">
-                    <FaBell className="text-8xl text-red-100 mx-auto mb-6" />
+                    <FaBell className="text-8xl text-blue-100 mx-auto mb-6" />
                     <p className="text-2xl text-gray-700">No new notifications</p>
                     <p className="text-lg text-gray-500 mt-3">Low stock or near-expiry alerts will appear here</p>
                   </div>
@@ -1403,7 +1777,7 @@ function HospitalDashboard() {
                       <div
                         key={notif._id}
                         className={`p-6 rounded-2xl border shadow-sm ${
-                          notif.severity === 'high' ? 'bg-red-50 border-red-300' :
+                          notif.severity === 'high' ? 'bg-blue-50 border-blue-300' :
                           notif.severity === 'medium' ? 'bg-orange-50 border-orange-300' :
                           'bg-yellow-50 border-yellow-300'
                         }`}
@@ -1442,8 +1816,8 @@ function HospitalDashboard() {
                 <div className="flex items-center justify-between flex-wrap gap-4">
                   <div>
                     <h3 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
-                      <span className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center">
-                        <FaUsers className="text-red-600 text-lg" />
+                      <span className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center">
+                        <FaUsers className="text-blue-600 text-lg" />
                       </span>
                       Donor Network
                     </h3>
@@ -1451,7 +1825,7 @@ function HospitalDashboard() {
                   </div>
                   <button
                     onClick={() => { setShowAlertForm(v => !v); setAlertResult(''); }}
-                    className="flex items-center gap-2 px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white text-sm font-bold rounded-xl transition-all shadow-sm"
+                    className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-bold rounded-xl transition-all shadow-sm"
                   >
                     <FaBullhorn className="text-sm" />
                     Send Alert
@@ -1463,11 +1837,11 @@ function HospitalDashboard() {
                   <div className={`flex items-center gap-3 px-5 py-3 rounded-xl text-sm font-medium border ${
                     alertResult.type === 'success'
                       ? 'bg-green-50 border-green-200 text-green-700'
-                      : 'bg-red-50 border-red-200 text-red-700'
+                      : 'bg-blue-50 border-blue-200 text-blue-700'
                   }`}>
                     {alertResult.type === 'success'
                       ? <FaCheckCircle className="text-green-500 flex-shrink-0" />
-                      : <FaExclamationCircle className="text-red-500 flex-shrink-0" />}
+                      : <FaExclamationCircle className="text-blue-500 flex-shrink-0" />}
                     {alertResult.msg}
                   </div>
                 )}
@@ -1482,19 +1856,19 @@ function HospitalDashboard() {
                   const previewCooldown = previewDonors.length - previewAvailable;
 
                   return (
-                    <div className="bg-red-50 border border-red-200 rounded-2xl p-5 space-y-4">
+                    <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 space-y-4">
                       {/* Header */}
                       <div className="flex items-center justify-between">
-                        <p className="text-sm font-bold text-red-700 flex items-center gap-2">
+                        <p className="text-sm font-bold text-blue-700 flex items-center gap-2">
                           <FaBullhorn className="text-sm" /> Broadcast Alert to Donors
                         </p>
                         {alertGroup && (
-                          <span className="text-xs font-semibold px-3 py-1 rounded-full bg-red-100 text-red-700 border border-red-200">
+                          <span className="text-xs font-semibold px-3 py-1 rounded-full bg-blue-100 text-blue-700 border border-blue-200">
                             {previewDonors.length === 0
                               ? 'No matching donors'
                               : `Will reach ${previewDonors.length} donor${previewDonors.length !== 1 ? 's' : ''}`}
                             {previewDonors.length > 0 && (
-                              <span className="ml-1 text-red-500 font-normal">
+                              <span className="ml-1 text-blue-500 font-normal">
                                 ({previewAvailable} available{previewCooldown > 0 ? `, ${previewCooldown} cooldown` : ''})
                               </span>
                             )}
@@ -1506,7 +1880,7 @@ function HospitalDashboard() {
                         {/* Blood group picker */}
                         <div>
                           <label className="block text-xs font-semibold text-gray-600 mb-1.5">
-                            Blood Group <span className="text-red-500">*</span>
+                            Blood Group <span className="text-blue-500">*</span>
                           </label>
                           <div className="grid grid-cols-4 gap-1.5">
                             {['A+','A-','B+','B-','O+','O-','AB+','AB-'].map(bg => {
@@ -1518,14 +1892,14 @@ function HospitalDashboard() {
                                   onClick={() => setAlertGroup(bg)}
                                   className={`py-2 rounded-xl text-xs font-bold border-2 transition-all relative ${
                                     alertGroup === bg
-                                      ? 'bg-red-600 border-red-600 text-white'
-                                      : 'bg-white border-gray-200 text-gray-700 hover:border-red-300'
+                                      ? 'bg-blue-600 border-blue-600 text-white'
+                                      : 'bg-white border-gray-200 text-gray-700 hover:border-blue-300'
                                   }`}
                                 >
                                   {bg}
                                   {bgCount > 0 && (
                                     <span className={`absolute -top-1.5 -right-1.5 text-[9px] font-bold w-4 h-4 rounded-full flex items-center justify-center ${
-                                      alertGroup === bg ? 'bg-white text-red-600' : 'bg-red-500 text-white'
+                                      alertGroup === bg ? 'bg-white text-blue-600' : 'bg-blue-500 text-white'
                                     }`}>{bgCount}</span>
                                   )}
                                 </button>
@@ -1538,7 +1912,7 @@ function HospitalDashboard() {
                               type="checkbox"
                               checked={alertIncludeCooldown}
                               onChange={e => setAlertIncludeCooldown(e.target.checked)}
-                              className="w-4 h-4 accent-red-600"
+                              className="w-4 h-4 accent-blue-600"
                             />
                             <span className="text-xs text-gray-600 font-medium">Also notify donors in cooldown</span>
                           </label>
@@ -1556,7 +1930,7 @@ function HospitalDashboard() {
                             placeholder={alertGroup
                               ? `Default: "🏥 ${user?.hospitalName || user?.username} needs ${alertGroup} blood donors. You're eligible — please visit or contact us!"`
                               : 'Select a blood group first...'}
-                            className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-red-400 outline-none text-sm resize-none"
+                            className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-blue-400 outline-none text-sm resize-none"
                           />
                           <p className="text-xs text-gray-400 mt-1">Leave blank to use the personalised default message.</p>
                         </div>
@@ -1575,8 +1949,8 @@ function HospitalDashboard() {
                           disabled={!alertGroup || alertLoading || previewDonors.length === 0}
                           className={`flex-[2] py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all ${
                             !alertGroup || alertLoading || previewDonors.length === 0
-                              ? 'bg-red-300 cursor-not-allowed text-white'
-                              : 'bg-red-600 hover:bg-red-700 text-white shadow-sm'
+                              ? 'bg-blue-300 cursor-not-allowed text-white'
+                              : 'bg-blue-600 hover:bg-blue-700 text-white shadow-sm'
                           }`}
                         >
                           {alertLoading
@@ -1599,8 +1973,8 @@ function HospitalDashboard() {
                     {
                       label: 'Most Common',
                       value: Object.entries(donorStats.byBloodGroup).sort((a,b) => b[1]-a[1])[0]?.[0] || '—',
-                      color: 'text-red-600',
-                      bg: 'border-red-100',
+                      color: 'text-blue-600',
+                      bg: 'border-blue-100',
                       icon: FaTint,
                     },
                   ].map(stat => (
@@ -1626,7 +2000,7 @@ function HospitalDashboard() {
                           value={donorFilter.search}
                           onChange={e => setDonorFilter(p => ({ ...p, search: e.target.value }))}
                           placeholder="Name or location..."
-                          className="w-full pl-8 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none"
+                          className="w-full pl-8 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none"
                         />
                       </div>
                     </div>
@@ -1635,7 +2009,7 @@ function HospitalDashboard() {
                       <select
                         value={donorFilter.bloodGroup}
                         onChange={e => setDonorFilter(p => ({ ...p, bloodGroup: e.target.value }))}
-                        className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none bg-white"
+                        className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none bg-white"
                       >
                         <option value="">All Groups</option>
                         {['A+','A-','B+','B-','O+','O-','AB+','AB-'].map(bg => (
@@ -1648,7 +2022,7 @@ function HospitalDashboard() {
                       <select
                         value={donorFilter.available}
                         onChange={e => setDonorFilter(p => ({ ...p, available: e.target.value }))}
-                        className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none bg-white"
+                        className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none bg-white"
                       >
                         <option value="">All</option>
                         <option value="true">Available</option>
@@ -1677,7 +2051,7 @@ function HospitalDashboard() {
                 {/* Donor list */}
                 {donorsLoading ? (
                   <div className="flex items-center justify-center py-16">
-                    <FaSpinner className="animate-spin text-3xl text-red-400" />
+                    <FaSpinner className="animate-spin text-3xl text-blue-400" />
                   </div>
                 ) : donors.length === 0 ? (
                   <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-gray-200">
@@ -1708,7 +2082,7 @@ function HospitalDashboard() {
                               <div className="flex items-center justify-between gap-2 flex-wrap">
                                 <span className="font-bold text-gray-900 text-base">{donor.username}</span>
                                 <div className="flex items-center gap-2">
-                                  <span className="text-xs font-extrabold bg-red-600 text-white px-2.5 py-1 rounded-lg">
+                                  <span className="text-xs font-extrabold bg-blue-600 text-white px-2.5 py-1 rounded-lg">
                                     {donor.bloodGroup}
                                   </span>
                                   <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
@@ -1731,7 +2105,7 @@ function HospitalDashboard() {
                                 {donor.phone && (
                                   <a
                                     href={`tel:${donor.phone}`}
-                                    className="text-xs font-semibold text-red-600 hover:text-red-800 flex items-center gap-1 transition-colors"
+                                    className="text-xs font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1 transition-colors"
                                   >
                                     <FaPhone className="text-xs" />
                                     {donor.phone}
@@ -1767,8 +2141,8 @@ function HospitalDashboard() {
                 <div className="flex items-center justify-between flex-wrap gap-4">
                   <div>
                     <h3 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
-                      <span className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center">
-                        <FaClipboardList className="text-red-600 text-lg" />
+                      <span className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center">
+                        <FaClipboardList className="text-blue-600 text-lg" />
                       </span>
                       Blood Requests
                     </h3>
@@ -1795,28 +2169,87 @@ function HospitalDashboard() {
                   ))}
                 </div>
 
-                {/* Tabs */}
-                <div className="flex gap-2 bg-gray-100 p-1 rounded-2xl w-fit">
-                  {[
-                    { key: 'all', label: 'All Requests' },
-                    { key: 'mine', label: 'At This Hospital' },
-                    { key: 'post', label: '+ Post Request' },
-                  ].map(tab => (
-                    <button
-                      key={tab.key}
-                      onClick={() => setRequestTab(tab.key)}
-                      className={`px-5 py-2 rounded-xl text-sm font-semibold transition-all ${
-                        requestTab === tab.key
-                          ? 'bg-white text-red-600 shadow-sm'
-                          : 'text-gray-500 hover:text-gray-700'
-                      }`}
-                    >{tab.label}</button>
-                  ))}
+                {/* Tabs + Map toggle */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex gap-2 bg-gray-100 p-1 rounded-2xl">
+                    {[
+                      { key: 'all',  label: 'All Requests' },
+                      { key: 'mine', label: 'At This Hospital' },
+                      { key: 'post', label: '+ Post Request' },
+                    ].map(tab => (
+                      <button
+                        key={tab.key}
+                        onClick={() => setRequestTab(tab.key)}
+                        className={`px-5 py-2 rounded-xl text-sm font-semibold transition-all ${
+                          requestTab === tab.key
+                            ? 'bg-white text-blue-600 shadow-sm'
+                            : 'text-gray-500 hover:text-gray-700'
+                        }`}
+                      >{tab.label}</button>
+                    ))}
+                  </div>
+                  {/* Map view toggle */}
+                  <button
+                    onClick={() => setShowRequestsMap(v => !v)}
+                    className={`flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold border-2 transition-all ${
+                      showRequestsMap
+                        ? 'bg-blue-600 border-blue-600 text-white'
+                        : 'bg-white border-blue-200 text-blue-600 hover:bg-blue-50'
+                    }`}
+                  >
+                    🗺️ {showRequestsMap ? 'Hide Map' : 'Map View'}
+                  </button>
                 </div>
+
+                {/* ── Blood Requests Map ──────────────────────────────────── */}
+                {showRequestsMap && (
+                  <div className="bg-white rounded-2xl border border-blue-100 shadow-sm overflow-hidden">
+                    <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
+                      <p className="text-sm font-semibold text-gray-700">
+                        Live Blood Requests Map
+                        {allRequests.some(r => r.urgency === 'emergency' && r.status === 'pending') && (
+                          <span className="ml-2 text-xs bg-blue-600 text-white px-2 py-0.5 rounded-full animate-pulse">EMERGENCY</span>
+                        )}
+                      </p>
+                      <div className="flex gap-3 text-xs text-gray-500">
+                        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-blue-600 inline-block animate-pulse" /> Emergency</span>
+                        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-blue-600 inline-block" /> Normal</span>
+                      </div>
+                    </div>
+                    <Suspense fallback={<div style={{height:"260px",display:"flex",alignItems:"center",justifyContent:"center",background:"#fef2f2"}}><div style={{width:28,height:28,border:"4px solid #fecaca",borderTopColor:"#dc2626",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/></div>}>
+                    <MapPicker
+                      height="420px"
+                      center={[27.7172, 85.3240]}
+                      zoom={11}
+                      fitMarkers={allRequests.filter(r => r.coordinates?.lat).length > 0}
+                      markers={allRequests
+                        .filter(r => r.status === 'pending' && r.coordinates?.lat)
+                        .map(r => ({
+                          id:          r._id,
+                          lat:         r.coordinates.lat,
+                          lng:         r.coordinates.lng,
+                          bloodGroup:  r.bloodGroup,
+                          label:       r.hospital || r.location,
+                          subLabel:    `${r.bloodGroup} · ${r.units} unit${r.units > 1 ? 's' : ''}`,
+                          units:       r.units,
+                          phone:       r.contactPhone,
+                          isEmergency: r.urgency === 'emergency',
+                          type:        'hospital',
+                        }))}
+                      readOnly
+                    />
+                    </Suspense>
+                    {allRequests.filter(r => r.status === 'pending' && r.coordinates?.lat).length === 0 && (
+                      <div className="px-4 py-3 bg-gray-50 text-xs text-gray-400 text-center border-t border-gray-100">
+                        No pending requests with location data yet. Requests submitted via the app will appear here.
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Post Request Form */}
                 {requestTab === 'post' && (
-                  <div className="bg-white rounded-2xl border border-red-100 shadow-sm p-6 max-w-xl space-y-5">
+                  <div className="bg-white rounded-2xl border border-blue-100 shadow-sm p-6 max-w-xl space-y-5">
                     <p className="text-sm font-bold text-gray-800">Post a Blood Request on Behalf of a Patient</p>
                     <p className="text-xs text-gray-500 -mt-3">Hospital name is pre-filled automatically.</p>
 
@@ -1824,7 +2257,7 @@ function HospitalDashboard() {
                       <div className={`flex items-center gap-2 px-4 py-3 rounded-xl text-sm font-medium ${
                         postResult.type === 'success'
                           ? 'bg-green-50 border border-green-200 text-green-700'
-                          : 'bg-red-50 border border-red-200 text-red-700'
+                          : 'bg-blue-50 border border-blue-200 text-blue-700'
                       }`}>
                         {postResult.type === 'success'
                           ? <FaCheckCircle className="flex-shrink-0" />
@@ -1848,8 +2281,8 @@ function HospitalDashboard() {
                               onClick={() => setPostForm(p => ({ ...p, urgency: opt.value }))}
                               className={`flex flex-col items-start px-4 py-3 rounded-xl border-2 text-left transition-all ${
                                 postForm.urgency === opt.value
-                                  ? 'border-red-500 bg-red-50 text-red-700'
-                                  : 'border-gray-200 text-gray-600 hover:border-red-200'
+                                  ? 'border-blue-500 bg-blue-50 text-blue-700'
+                                  : 'border-gray-200 text-gray-600 hover:border-blue-200'
                               }`}
                             >
                               <span className="text-sm font-bold">{opt.label}</span>
@@ -1861,7 +2294,7 @@ function HospitalDashboard() {
 
                       {/* Blood group */}
                       <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-2">Blood Group <span className="text-red-500">*</span></label>
+                        <label className="block text-xs font-semibold text-gray-600 mb-2">Blood Group <span className="text-blue-500">*</span></label>
                         <div className="grid grid-cols-4 gap-1.5">
                           {['A+','A-','B+','B-','O+','O-','AB+','AB-'].map(bg => (
                             <button
@@ -1870,8 +2303,8 @@ function HospitalDashboard() {
                               onClick={() => setPostForm(p => ({ ...p, bloodGroup: bg }))}
                               className={`py-2.5 rounded-xl text-sm font-bold border-2 transition-all ${
                                 postForm.bloodGroup === bg
-                                  ? 'bg-red-600 border-red-600 text-white'
-                                  : 'bg-white border-gray-200 text-gray-700 hover:border-red-300'
+                                  ? 'bg-blue-600 border-blue-600 text-white'
+                                  : 'bg-white border-gray-200 text-gray-700 hover:border-blue-300'
                               }`}
                             >{bg}</button>
                           ))}
@@ -1880,13 +2313,13 @@ function HospitalDashboard() {
 
                       {/* Units */}
                       <div>
-                        <label className="block text-xs font-semibold text-gray-600 mb-2">Units Needed <span className="text-red-500">*</span></label>
+                        <label className="block text-xs font-semibold text-gray-600 mb-2">Units Needed <span className="text-blue-500">*</span></label>
                         <div className="flex items-center gap-3">
                           <button type="button" onClick={() => setPostForm(p => ({ ...p, units: Math.max(1, p.units - 1) }))}
-                            className="w-10 h-10 rounded-xl border-2 border-gray-200 text-lg font-bold text-gray-500 hover:border-red-400 hover:text-red-600 transition-all">−</button>
-                          <span className="text-2xl font-extrabold text-red-600 w-8 text-center">{postForm.units}</span>
+                            className="w-10 h-10 rounded-xl border-2 border-gray-200 text-lg font-bold text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-all">−</button>
+                          <span className="text-2xl font-extrabold text-blue-600 w-8 text-center">{postForm.units}</span>
                           <button type="button" onClick={() => setPostForm(p => ({ ...p, units: Math.min(10, p.units + 1) }))}
-                            className="w-10 h-10 rounded-xl border-2 border-gray-200 text-lg font-bold text-gray-500 hover:border-red-400 hover:text-red-600 transition-all">+</button>
+                            className="w-10 h-10 rounded-xl border-2 border-gray-200 text-lg font-bold text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-all">+</button>
                           <span className="text-xs text-gray-400 ml-1">~{postForm.units * 350}ml</span>
                         </div>
                       </div>
@@ -1894,24 +2327,86 @@ function HospitalDashboard() {
                       {/* Location + Phone */}
                       <div className="grid grid-cols-2 gap-3">
                         <div>
-                          <label className="block text-xs font-semibold text-gray-600 mb-1.5">Location / Ward</label>
-                          <input
-                            type="text"
-                            value={postForm.location}
-                            onChange={e => setPostForm(p => ({ ...p, location: e.target.value }))}
-                            placeholder="e.g. Ward 3, Kathmandu"
-                            className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none"
-                          />
+                          <label className="block text-xs font-semibold text-gray-600 mb-1.5">
+                            Location / Ward
+                            <span className="ml-1 text-blue-400 font-normal">(click 📍)</span>
+                          </label>
+                          <div className="relative">
+                            <button
+                              type="button"
+                              onClick={() => detectAndFill(setPostLocGpsLoading, (v) => setPostForm(p => ({ ...p, location: v })), setPostLocGeoSuccess, setPostLocGeocoding, setPostPickedCoords)}
+                              disabled={postLocGpsLoading || postLocGeocoding}
+                              className="absolute left-2.5 top-1/2 -translate-y-1/2 z-10 group disabled:cursor-not-allowed"
+                              title="Detect live location"
+                            >
+                              {postLocGpsLoading || postLocGeocoding
+                                ? <span className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin inline-block" />
+                                : postLocGeoSuccess
+                                  ? <span className="text-green-500 text-xs">📍</span>
+                                  : <span className="text-gray-400 group-hover:text-blue-500 group-hover:scale-125 transition-all text-xs">📍</span>
+                              }
+                            </button>
+                            <input
+                              type="text"
+                              value={postForm.location}
+                              onChange={e => { setPostForm(p => ({ ...p, location: e.target.value })); setPostLocGeoSuccess(false); }}
+                              placeholder="Click 📍 or type…"
+                              className={`w-full pl-7 pr-2 py-2.5 rounded-xl border text-sm focus:outline-none ${
+                                postLocGeoSuccess ? 'border-green-400' : 'border-gray-200 focus:border-blue-400'
+                              }`}
+                            />
+                          </div>
+
+                          {/* Map toggle for post location */}
+                          <button
+                            type="button"
+                            onClick={() => setShowPostLocMap(m => !m)}
+                            className="mt-1 flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-800 transition-colors"
+                          >
+                            🗺️ {showPostLocMap ? 'Hide' : 'Pick on map'}
+                          </button>
+                          {showPostLocMap && (
+                            <div className="mt-1.5 rounded-xl overflow-hidden border border-blue-200 shadow-sm col-span-2">
+                              <Suspense fallback={<div style={{height:"260px",display:"flex",alignItems:"center",justifyContent:"center",background:"#fef2f2"}}><div style={{width:28,height:28,border:"4px solid #fecaca",borderTopColor:"#dc2626",borderRadius:"50%",animation:"spin 0.7s linear infinite"}}/></div>}>
+                              <MapPicker
+                                height="200px"
+                                center={
+                                  postPickedCoords
+                                    ? [postPickedCoords.lat, postPickedCoords.lng]
+                                    : [27.7172, 85.3240]
+                                }
+                                zoom={13}
+                                pickedLocation={postPickedCoords}
+                                onLocationPick={handlePostLocMapPick}
+                                markers={
+                                  postPickedCoords
+                                    ? [{
+                                        id: 'post-loc',
+                                        lat: postPickedCoords.lat,
+                                        lng: postPickedCoords.lng,
+                                        type: 'hospital',
+                                        label: hospitalName || 'Hospital',
+                                        subLabel: postForm.location || '',
+                                      }]
+                                    : []
+                                }
+                              />
+                              </Suspense>
+                              <p className="text-xs text-center text-gray-500 py-1 bg-gray-50 border-t border-blue-100">
+                                Click to pin exact location
+                              </p>
+                            </div>
+                          )}
                         </div>
                         <div>
-                          <label className="block text-xs font-semibold text-gray-600 mb-1.5">Contact Phone <span className="text-red-500">*</span></label>
+                          <label className="block text-xs font-semibold text-gray-600 mb-1.5">Contact Phone <span className="text-blue-500">*</span></label>
                           <input
                             type="tel"
                             required
                             value={postForm.contactPhone}
                             onChange={e => setPostForm(p => ({ ...p, contactPhone: e.target.value }))}
                             placeholder="e.g. 9841234567"
-                            className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none"
+                            className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none"
                           />
                         </div>
                       </div>
@@ -1924,7 +2419,7 @@ function HospitalDashboard() {
                           onChange={e => setPostForm(p => ({ ...p, note: e.target.value }))}
                           rows="2"
                           placeholder="Patient details, special requirements..."
-                          className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none resize-none"
+                          className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none resize-none"
                         />
                       </div>
 
@@ -1933,10 +2428,10 @@ function HospitalDashboard() {
                         disabled={postLoading || !postForm.bloodGroup}
                         className={`w-full py-3 rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition-all ${
                           postLoading || !postForm.bloodGroup
-                            ? 'bg-red-300 cursor-not-allowed text-white'
+                            ? 'bg-blue-300 cursor-not-allowed text-white'
                             : postForm.urgency === 'emergency'
-                            ? 'bg-red-700 hover:bg-red-800 text-white shadow-sm'
-                            : 'bg-red-600 hover:bg-red-700 text-white shadow-sm'
+                            ? 'bg-blue-700 hover:bg-blue-800 text-white shadow-sm'
+                            : 'bg-blue-600 hover:bg-blue-700 text-white shadow-sm'
                         }`}
                       >
                         {postLoading
@@ -1964,7 +2459,7 @@ function HospitalDashboard() {
                               value={requestFilter.search}
                               onChange={e => setRequestFilter(p => ({ ...p, search: e.target.value }))}
                               placeholder="Hospital or location..."
-                              className="w-full pl-8 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none"
+                              className="w-full pl-8 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none"
                             />
                           </div>
                         </div>
@@ -1973,7 +2468,7 @@ function HospitalDashboard() {
                           <select
                             value={requestFilter.bloodGroup}
                             onChange={e => setRequestFilter(p => ({ ...p, bloodGroup: e.target.value }))}
-                            className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none bg-white"
+                            className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none bg-white"
                           >
                             <option value="">All Groups</option>
                             {['A+','A-','B+','B-','O+','O-','AB+','AB-'].map(bg => (
@@ -1986,7 +2481,7 @@ function HospitalDashboard() {
                           <select
                             value={requestFilter.urgency}
                             onChange={e => setRequestFilter(p => ({ ...p, urgency: e.target.value }))}
-                            className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none bg-white"
+                            className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none bg-white"
                           >
                             <option value="">All</option>
                             <option value="emergency">🚨 Emergency</option>
@@ -1998,7 +2493,7 @@ function HospitalDashboard() {
                           <select
                             value={requestFilter.status}
                             onChange={e => setRequestFilter(p => ({ ...p, status: e.target.value }))}
-                            className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none bg-white"
+                            className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none bg-white"
                           >
                             <option value="">All</option>
                             <option value="pending">Pending</option>
@@ -2027,7 +2522,7 @@ function HospitalDashboard() {
                     {/* Request cards */}
                     {requestsLoading ? (
                       <div className="flex items-center justify-center py-16">
-                        <FaSpinner className="animate-spin text-3xl text-red-400" />
+                        <FaSpinner className="animate-spin text-3xl text-blue-400" />
                       </div>
                     ) : (() => {
                       const hospitalName = (user?.hospitalName || user?.username || '').toLowerCase();
@@ -2055,11 +2550,11 @@ function HospitalDashboard() {
                               <div
                                 key={req._id}
                                 className={`bg-white rounded-2xl border overflow-hidden shadow-sm hover:shadow-md transition-all ${
-                                  isEmerg && isPending ? 'border-red-300' : 'border-gray-100'
+                                  isEmerg && isPending ? 'border-blue-300' : 'border-gray-100'
                                 }`}
                               >
                                 {isEmerg && (
-                                  <div className="bg-red-600 px-4 py-1.5 flex items-center gap-2">
+                                  <div className="bg-blue-600 px-4 py-1.5 flex items-center gap-2">
                                     <span className="text-sm animate-pulse">🚨</span>
                                     <span className="text-xs font-bold text-white uppercase tracking-wide">Emergency Request</span>
                                   </div>
@@ -2067,7 +2562,7 @@ function HospitalDashboard() {
                                 <div className="p-4">
                                   <div className="flex items-start gap-4">
                                     {/* Blood group badge */}
-                                    <div className={`flex-shrink-0 w-12 h-12 rounded-2xl flex items-center justify-center shadow-sm ${isEmerg ? 'bg-red-600' : 'bg-red-500'}`}>
+                                    <div className={`flex-shrink-0 w-12 h-12 rounded-2xl flex items-center justify-center shadow-sm ${isEmerg ? 'bg-blue-600' : 'bg-blue-500'}`}>
                                       <span className="text-white font-extrabold text-sm">{req.bloodGroup}</span>
                                     </div>
 
@@ -2077,7 +2572,7 @@ function HospitalDashboard() {
                                           <p className="font-bold text-gray-900">{req.hospital}</p>
                                           <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1">
                                             <span className="text-xs text-gray-500 flex items-center gap-1">
-                                              <FaTint className="text-red-400 text-xs" />{req.units} unit{req.units > 1 ? 's' : ''}
+                                              <FaTint className="text-blue-400 text-xs" />{req.units} unit{req.units > 1 ? 's' : ''}
                                             </span>
                                             {req.location && (
                                               <span className="text-xs text-gray-500 flex items-center gap-1">
@@ -2107,7 +2602,7 @@ function HospitalDashboard() {
                                           </span>
                                         )}
                                         {req.contactPhone && (
-                                          <a href={`tel:${req.contactPhone}`} className="text-xs font-semibold text-red-600 hover:text-red-800 flex items-center gap-1">
+                                          <a href={`tel:${req.contactPhone}`} className="text-xs font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1">
                                             <FaPhone className="text-xs" />{req.contactPhone}
                                           </a>
                                         )}
@@ -2154,7 +2649,7 @@ function HospitalDashboard() {
                                               <button
                                                 onClick={() => handleCancelRequest(req._id)}
                                                 disabled={busy}
-                                                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-gray-500 border border-gray-200 rounded-xl hover:bg-red-50 hover:text-red-600 hover:border-red-200 transition-all disabled:opacity-50"
+                                                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-gray-500 border border-gray-200 rounded-xl hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-all disabled:opacity-50"
                                               >
                                                 {busy
                                                   ? <FaSpinner className="animate-spin text-xs" />
@@ -2209,7 +2704,7 @@ function HospitalDashboard() {
                   Assigning will confirm the donation and start their 56-day cooldown.
                 </p>
                 <div className="flex items-center gap-2 mt-2">
-                  <span className="text-xs font-bold bg-red-600 text-white px-2.5 py-1 rounded-lg">
+                  <span className="text-xs font-bold bg-blue-600 text-white px-2.5 py-1 rounded-lg">
                     {assignModal.bloodGroup}
                   </span>
                   <span className="text-xs text-gray-500">· {assignModal.units} unit{assignModal.units > 1 ? 's' : ''} needed</span>
@@ -2229,7 +2724,7 @@ function HospitalDashboard() {
               <div className={`mx-6 mt-4 flex items-center gap-2 px-4 py-3 rounded-xl text-sm font-medium ${
                 assignResult.type === 'success'
                   ? 'bg-green-50 border border-green-200 text-green-700'
-                  : 'bg-red-50 border border-red-200 text-red-700'
+                  : 'bg-blue-50 border border-blue-200 text-blue-700'
               }`}>
                 {assignResult.type === 'success'
                   ? <FaCheckCircle className="flex-shrink-0" />
@@ -2339,7 +2834,7 @@ function HospitalDashboard() {
 
             <div>
               <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-                <FaEdit className="text-red-500" /> Edit Blood Request
+                <FaEdit className="text-blue-500" /> Edit Blood Request
               </h3>
               <p className="text-xs text-gray-500 mt-1">Only pending requests can be edited.</p>
             </div>
@@ -2348,7 +2843,7 @@ function HospitalDashboard() {
               <div className={`flex items-center gap-2 px-4 py-3 rounded-xl text-sm font-medium ${
                 editResult.type === 'success'
                   ? 'bg-green-50 border border-green-200 text-green-700'
-                  : 'bg-red-50 border border-red-200 text-red-700'
+                  : 'bg-blue-50 border border-blue-200 text-blue-700'
               }`}>
                 {editResult.type === 'success' ? <FaCheckCircle className="flex-shrink-0" /> : <FaExclamationCircle className="flex-shrink-0" />}
                 {editResult.msg}
@@ -2369,8 +2864,8 @@ function HospitalDashboard() {
                     onClick={() => setEditForm(p => ({ ...p, urgency: opt.value }))}
                     className={`flex flex-col items-start px-4 py-3 rounded-xl border-2 text-left transition-all ${
                       editForm.urgency === opt.value
-                        ? 'border-red-500 bg-red-50 text-red-700'
-                        : 'border-gray-200 text-gray-600 hover:border-red-200'
+                        ? 'border-blue-500 bg-blue-50 text-blue-700'
+                        : 'border-gray-200 text-gray-600 hover:border-blue-200'
                     }`}
                   >
                     <span className="text-sm font-bold">{opt.label}</span>
@@ -2391,8 +2886,8 @@ function HospitalDashboard() {
                     onClick={() => setEditForm(p => ({ ...p, bloodGroup: bg }))}
                     className={`py-2.5 rounded-xl text-sm font-bold border-2 transition-all ${
                       editForm.bloodGroup === bg
-                        ? 'bg-red-600 border-red-600 text-white'
-                        : 'bg-white border-gray-200 text-gray-700 hover:border-red-300'
+                        ? 'bg-blue-600 border-blue-600 text-white'
+                        : 'bg-white border-gray-200 text-gray-700 hover:border-blue-300'
                     }`}
                   >{bg}</button>
                 ))}
@@ -2404,10 +2899,10 @@ function HospitalDashboard() {
               <label className="block text-xs font-semibold text-gray-600 mb-2">Units Needed</label>
               <div className="flex items-center gap-3">
                 <button type="button" onClick={() => setEditForm(p => ({ ...p, units: Math.max(1, p.units - 1) }))}
-                  className="w-10 h-10 rounded-xl border-2 border-gray-200 text-lg font-bold text-gray-500 hover:border-red-400 hover:text-red-600 transition-all">−</button>
-                <span className="text-2xl font-extrabold text-red-600 w-8 text-center">{editForm.units}</span>
+                  className="w-10 h-10 rounded-xl border-2 border-gray-200 text-lg font-bold text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-all">−</button>
+                <span className="text-2xl font-extrabold text-blue-600 w-8 text-center">{editForm.units}</span>
                 <button type="button" onClick={() => setEditForm(p => ({ ...p, units: Math.min(10, p.units + 1) }))}
-                  className="w-10 h-10 rounded-xl border-2 border-gray-200 text-lg font-bold text-gray-500 hover:border-red-400 hover:text-red-600 transition-all">+</button>
+                  className="w-10 h-10 rounded-xl border-2 border-gray-200 text-lg font-bold text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-all">+</button>
                 <span className="text-xs text-gray-400 ml-1">~{editForm.units * 350}ml</span>
               </div>
             </div>
@@ -2421,7 +2916,7 @@ function HospitalDashboard() {
                   value={editForm.location}
                   onChange={e => setEditForm(p => ({ ...p, location: e.target.value }))}
                   placeholder="e.g. Ward 3, Kathmandu"
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none"
+                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none"
                 />
               </div>
               <div>
@@ -2431,7 +2926,7 @@ function HospitalDashboard() {
                   value={editForm.contactPhone}
                   onChange={e => setEditForm(p => ({ ...p, contactPhone: e.target.value }))}
                   placeholder="e.g. 9841234567"
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none"
+                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none"
                 />
               </div>
             </div>
@@ -2444,7 +2939,7 @@ function HospitalDashboard() {
                 onChange={e => setEditForm(p => ({ ...p, note: e.target.value }))}
                 rows="2"
                 placeholder="Patient details, special requirements..."
-                className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-red-400 outline-none resize-none"
+                className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-blue-400 outline-none resize-none"
               />
             </div>
 
@@ -2458,8 +2953,8 @@ function HospitalDashboard() {
                 disabled={editLoading || !editForm.bloodGroup}
                 className={`flex-[2] py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all ${
                   editLoading || !editForm.bloodGroup
-                    ? 'bg-red-300 cursor-not-allowed text-white'
-                    : 'bg-red-600 hover:bg-red-700 text-white shadow-sm'
+                    ? 'bg-blue-300 cursor-not-allowed text-white'
+                    : 'bg-blue-600 hover:bg-blue-700 text-white shadow-sm'
                 }`}
               >
                 {editLoading
@@ -2470,6 +2965,295 @@ function HospitalDashboard() {
           </div>
         </div>
       )}
+
+      {/* Add Unit (set expiry date) Modal */}
+      {addUnitModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-6 space-y-5 relative">
+            <button
+              onClick={() => {
+                if (addUnitLoading) return;
+                setAddUnitModal(null);
+                setAddUnitExpiryDate('');
+              }}
+              className="absolute top-4 right-4 text-gray-400 hover:text-gray-700 transition-all"
+            >
+              <FaTimes className="text-xl" />
+            </button>
+
+            <div>
+              <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                <FaTint className="text-blue-500" /> Add 1 Unit of {addUnitModal.bloodGroup}
+              </h3>
+              <p className="text-xs text-gray-500 mt-1">
+                Please set the expiry date for the blood unit being added to inventory.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-2">
+                Expiry Date <span className="text-blue-500">*</span>
+              </label>
+              <input
+                type="date"
+                value={addUnitExpiryDate}
+                onChange={(e) => setAddUnitExpiryDate(e.target.value)}
+                min={new Date().toISOString().split('T')[0]}
+                className="w-full px-4 py-3 rounded-xl border-2 border-gray-200 text-sm focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none"
+              />
+              <p className="text-xs text-gray-400 mt-2">
+                Whole blood typically expires 35–42 days from collection.
+              </p>
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => {
+                  if (addUnitLoading) return;
+                  setAddUnitModal(null);
+                  setAddUnitExpiryDate('');
+                }}
+                disabled={addUnitLoading}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold border-2 border-gray-200 text-gray-600 hover:bg-gray-50 transition-all disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmAddUnit}
+                disabled={addUnitLoading || !addUnitExpiryDate}
+                className={`flex-[2] py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-all ${
+                  addUnitLoading || !addUnitExpiryDate
+                    ? 'bg-green-300 cursor-not-allowed text-white'
+                    : 'bg-green-600 hover:bg-green-700 text-white shadow-sm'
+                }`}
+              >
+                {addUnitLoading
+                  ? <><FaSpinner className="animate-spin text-xs" /> Adding...</>
+                  : <><FaPlusCircle className="text-xs" /> Add 1 Unit</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Confirm Modal (replaces window.confirm) */}
+      {confirmModal && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-7 space-y-5 relative">
+            <div className="flex items-start gap-4">
+              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 ${
+                confirmModal.tone === 'danger' ? 'bg-blue-100 text-blue-600' : 'bg-blue-100 text-blue-600'
+              }`}>
+                {confirmModal.tone === 'danger'
+                  ? <FaExclamationTriangle className="text-xl" />
+                  : <FaInfoCircle className="text-xl" />}
+              </div>
+              <div className="flex-1 pt-1">
+                <h3 className="text-lg font-bold text-gray-900">{confirmModal.title}</h3>
+                {confirmModal.message && (
+                  <p className="text-sm text-gray-600 mt-1.5 leading-relaxed">{confirmModal.message}</p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={confirmModal.onCancel}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold border-2 border-gray-200 text-gray-700 hover:bg-gray-50 transition-all"
+              >
+                {confirmModal.cancelText}
+              </button>
+              <button
+                onClick={confirmModal.onConfirm}
+                className={`flex-[2] py-2.5 rounded-xl text-sm font-bold text-white shadow-sm transition-all ${
+                  confirmModal.tone === 'danger'
+                    ? 'bg-blue-600 hover:bg-blue-700'
+                    : 'bg-blue-600 hover:bg-blue-700'
+                }`}
+              >
+                {confirmModal.confirmText}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Event Attendees Modal */}
+      {attendeesEvent && (() => {
+        const allRsvps = (attendeesEvent.rsvps || []).filter(r => r.status === 'attending');
+        const q = attendeesSearch.trim().toLowerCase();
+        const filtered = q
+          ? allRsvps.filter(r => {
+              const u = r.user || {};
+              return (
+                (u.username || '').toLowerCase().includes(q) ||
+                (u.email || '').toLowerCase().includes(q) ||
+                (u.phone || '').toLowerCase().includes(q) ||
+                (u.bloodGroup || '').toLowerCase().includes(q) ||
+                (u.location || '').toLowerCase().includes(q)
+              );
+            })
+          : allRsvps;
+
+        return (
+          <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col relative">
+              <button
+                onClick={() => setAttendeesEvent(null)}
+                className="absolute top-4 right-4 text-gray-400 hover:text-gray-700 transition-all z-10"
+              >
+                <FaTimes className="text-xl" />
+              </button>
+
+              {/* Header */}
+              <div className="px-7 pt-7 pb-4 border-b border-gray-100">
+                <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2">
+                  <FaUserGroup className="text-blue-500" />
+                  Attendees — {attendeesEvent.title}
+                </h3>
+                <p className="text-xs text-gray-500 mt-1">
+                  {new Date(attendeesEvent.date).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
+                  {' · '}{attendeesEvent.time}
+                  {' · '}{attendeesEvent.location}
+                </p>
+
+                <div className="mt-4 flex flex-wrap items-center gap-3">
+                  <span className="px-3 py-1 rounded-full bg-blue-50 border border-blue-100 text-blue-700 text-sm font-semibold">
+                    {allRsvps.length} confirmed
+                  </span>
+                  {attendeesEvent.targetDonors > 0 && (
+                    <span className="px-3 py-1 rounded-full bg-gray-50 border border-gray-200 text-gray-700 text-sm font-semibold">
+                      Target: {attendeesEvent.targetDonors}
+                    </span>
+                  )}
+                </div>
+
+                {/* Search */}
+                {allRsvps.length > 0 && (
+                  <div className="mt-4 relative">
+                    <FaSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm" />
+                    <input
+                      type="text"
+                      value={attendeesSearch}
+                      onChange={e => setAttendeesSearch(e.target.value)}
+                      placeholder="Search by name, phone, email, blood group, or location..."
+                      className="w-full pl-10 pr-3 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-blue-400 focus:ring-4 focus:ring-blue-100 outline-none"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* List */}
+              <div className="flex-1 overflow-y-auto px-7 py-4">
+                {allRsvps.length === 0 ? (
+                  <div className="text-center py-16">
+                    <FaUserGroup className="text-5xl text-gray-300 mx-auto mb-4" />
+                    <p className="text-gray-500 font-medium">No attendees yet</p>
+                    <p className="text-xs text-gray-400 mt-1">Donors who RSVP will appear here.</p>
+                  </div>
+                ) : filtered.length === 0 ? (
+                  <div className="text-center py-16">
+                    <FaSearch className="text-3xl text-gray-300 mx-auto mb-3" />
+                    <p className="text-sm text-gray-500">No attendees match "{attendeesSearch}"</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {filtered.map((r, idx) => {
+                      // r.user can be a populated user object OR a raw ObjectId string
+                      // (raw string happens when backend populate hasn't run yet — needs server restart)
+                      const isPopulated = r.user && typeof r.user === 'object';
+                      const u = isPopulated ? r.user : {};
+                      const displayName = u.username || 'Details unavailable — restart backend';
+                      const initials = u.username
+                        ? u.username.split(' ').map(s => s[0]).slice(0, 2).join('').toUpperCase()
+                        : '?';
+                      return (
+                        <div
+                          key={(u._id || idx) + ''}
+                          className="flex items-start gap-4 p-4 rounded-2xl border border-gray-200 hover:border-blue-200 hover:bg-blue-50/30 transition-all"
+                        >
+                          {/* Avatar */}
+                          <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 text-white font-bold flex items-center justify-center flex-shrink-0 text-sm shadow-sm">
+                            {u.avatar
+                              ? <img src={u.avatar} alt="" className="w-full h-full rounded-full object-cover" />
+                              : initials}
+                          </div>
+
+                          {/* Details */}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h4 className={`font-bold text-base ${isPopulated && u.username ? 'text-gray-900' : 'text-orange-600'}`}>
+                                {displayName}
+                              </h4>
+                              {u.bloodGroup && (
+                                <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-md text-xs font-bold">
+                                  {u.bloodGroup}
+                                </span>
+                              )}
+                              {u.role && (
+                                <span className="px-2 py-0.5 bg-gray-100 text-gray-600 rounded-md text-[10px] font-semibold uppercase">
+                                  {u.role}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-600">
+                              {u.phone ? (
+                                <a href={`tel:${u.phone}`} className="flex items-center gap-1.5 hover:text-blue-600 transition font-medium">
+                                  <FaPhone className="text-blue-400 text-xs" /> {u.phone}
+                                </a>
+                              ) : isPopulated && (
+                                <span className="flex items-center gap-1.5 text-gray-400 italic">
+                                  <FaPhone className="text-gray-300 text-xs" /> No phone provided
+                                </span>
+                              )}
+                              {u.email && (
+                                <a href={`mailto:${u.email}`} className="flex items-center gap-1.5 hover:text-blue-600 transition truncate">
+                                  <FaEnvelope className="text-blue-400 text-xs" /> {u.email}
+                                </a>
+                              )}
+                              {u.location && (
+                                <span className="flex items-center gap-1.5">
+                                  <FaMapMarkerAlt className="text-blue-400 text-xs" /> {u.location}
+                                </span>
+                              )}
+                            </div>
+
+                            {!isPopulated && (
+                              <p className="text-[11px] text-orange-600 mt-1.5 bg-orange-50 border border-orange-200 rounded-lg px-2 py-1 inline-block">
+                                Restart your backend server so attendee details can be loaded.
+                              </p>
+                            )}
+
+                            {r.rsvpAt && (
+                              <p className="text-[11px] text-gray-400 mt-1.5">
+                                RSVP'd {new Date(r.rsvpAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Footer */}
+              <div className="px-7 py-4 border-t border-gray-100 flex justify-end">
+                <button
+                  onClick={() => setAttendeesEvent(null)}
+                  className="px-5 py-2.5 rounded-xl text-sm font-semibold border-2 border-gray-200 text-gray-700 hover:bg-gray-50 transition-all"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Toast notifications */}
+      <Toast toasts={toasts} remove={removeToast} />
     </div>
   );
 }

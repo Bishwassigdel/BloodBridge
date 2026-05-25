@@ -1,6 +1,7 @@
 // server.js (main backend file)
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import path from 'path';
@@ -27,6 +28,17 @@ dotenv.config();
 const app = express();
 
 // ── Middleware ──────────────────────────────────────────────────────────
+// Gzip all responses — reduces payload by 60-70% (compression was installed but never wired up)
+app.use(compression({
+  level: 6,           // sweet-spot between speed and ratio
+  threshold: 1024,    // only compress responses > 1 KB
+  filter: (req, res) => {
+    // Don't compress SSE streams — they must stay as raw text/event-stream
+    if (req.path === '/api/sse') return false;
+    return compression.filter(req, res);
+  },
+}));
+
 app.use(cors({
   origin: [
     'http://localhost:5173',     // Vite default
@@ -37,25 +49,31 @@ app.use(cors({
 }));
 
 // ── Security Headers for Google Sign-In ─────────────────────────────────
-// Fix: Cross-Origin-Opener-Policy warning when using Google OAuth popup
+// Allows Google OAuth popup to post messages back to the opener window
 app.use((req, res, next) => {
-  // Allow popups from Google Sign-In to communicate back to parent window
   res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
-  // Allow cross-origin resources if they have proper headers
-  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+  // Note: Do NOT set Cross-Origin-Embedder-Policy here — it blocks Google OAuth
   next();
 });
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Serve uploaded files (avatars, etc.)
-app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
+// Serve uploaded files (avatars, etc.) — cache images in browser for 7 days
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads'), {
+  maxAge: '7d',
+  immutable: false,
+  etag: true,
+  lastModified: true,
+}));
 
 // ── MongoDB Connection (modern - no deprecated options) ─────────────────
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGODB_URI);
+    await mongoose.connect(process.env.MONGODB_URI, {
+      serverSelectionTimeoutMS: 5000, // fail fast instead of hanging 30s
+      connectTimeoutMS: 5000,
+    });
     console.log('✅ MongoDB Connected Successfully');
   } catch (err) {
     console.error('❌ MongoDB connection failed:', err.message);

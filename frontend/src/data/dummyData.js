@@ -3,68 +3,96 @@
  * This file contains mock data for donors, blood requests, and inventory
  */
 
-// Dummy donors data
+// Dummy donors data — with Nepal coordinates for map display
 export const dummyDonors = [
   {
     id: 1,
-    name: 'John Doe',
-    email: 'john@example.com',
+    name: 'Aarav Sharma',
+    email: 'aarav@example.com',
     bloodGroup: 'O+',
-    phone: '+1234567890',
-    location: 'New York, NY',
+    phone: '9841234501',
+    location: 'Thamel, Kathmandu',
+    lat: 27.7151, lng: 85.3123,
     lastDonation: '2024-01-15',
     available: true
   },
   {
     id: 2,
-    name: 'Jane Smith',
-    email: 'jane@example.com',
+    name: 'Sita Karki',
+    email: 'sita@example.com',
     bloodGroup: 'A+',
-    phone: '+1234567891',
-    location: 'Los Angeles, CA',
+    phone: '9841234502',
+    location: 'Lalitpur, Patan',
+    lat: 27.6588, lng: 85.3247,
     lastDonation: '2024-02-10',
     available: true
   },
   {
     id: 3,
-    name: 'Mike Johnson',
-    email: 'mike@example.com',
+    name: 'Bikash Thapa',
+    email: 'bikash@example.com',
     bloodGroup: 'B+',
-    phone: '+1234567892',
-    location: 'Chicago, IL',
+    phone: '9841234503',
+    location: 'Baneshwor, Kathmandu',
+    lat: 27.6921, lng: 85.3428,
     lastDonation: '2024-01-20',
     available: true
   },
   {
     id: 4,
-    name: 'Sarah Williams',
-    email: 'sarah@example.com',
+    name: 'Priya Rana',
+    email: 'priya@example.com',
     bloodGroup: 'AB+',
-    phone: '+1234567893',
-    location: 'Houston, TX',
+    phone: '9841234504',
+    location: 'Koteshwor, Kathmandu',
+    lat: 27.6839, lng: 85.3564,
     lastDonation: '2024-02-05',
     available: true
   },
   {
     id: 5,
-    name: 'David Brown',
-    email: 'david@example.com',
+    name: 'Rohan Bista',
+    email: 'rohan@example.com',
     bloodGroup: 'O-',
-    phone: '+1234567894',
-    location: 'Phoenix, AZ',
+    phone: '9841234505',
+    location: 'Maharajgunj, Kathmandu',
+    lat: 27.7356, lng: 85.3307,
     lastDonation: '2024-01-25',
     available: true
   },
   {
     id: 6,
-    name: 'Emily Davis',
-    email: 'emily@example.com',
+    name: 'Anita Gurung',
+    email: 'anita@example.com',
     bloodGroup: 'A-',
-    phone: '+1234567895',
-    location: 'Philadelphia, PA',
+    phone: '9841234506',
+    location: 'Chabahil, Kathmandu',
+    lat: 27.7221, lng: 85.3490,
     lastDonation: '2024-02-12',
     available: true
-  }
+  },
+  {
+    id: 7,
+    name: 'Suresh Adhikari',
+    email: 'suresh@example.com',
+    bloodGroup: 'B-',
+    phone: '9841234507',
+    location: 'Kirtipur, Kathmandu',
+    lat: 27.6773, lng: 85.2791,
+    lastDonation: '2024-02-01',
+    available: true
+  },
+  {
+    id: 8,
+    name: 'Deepa Pandey',
+    email: 'deepa@example.com',
+    bloodGroup: 'AB-',
+    phone: '9841234508',
+    location: 'Bhaktapur',
+    lat: 27.6710, lng: 85.4298,
+    lastDonation: '2024-01-30',
+    available: true
+  },
 ]
 
 // Dummy blood requests

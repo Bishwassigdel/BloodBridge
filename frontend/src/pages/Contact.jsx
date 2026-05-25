@@ -14,7 +14,7 @@ import {
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
 import { useAuth } from '../context/AuthContext';
-import axios from 'axios';
+import api from '../services/api';
 
 function Contact() {
   const { user, logout } = useAuth();
@@ -38,7 +38,7 @@ function Contact() {
     setSubmitting(true);
     try {
       // Try to send via API; gracefully handle if endpoint doesn't exist yet
-      await axios.post('/api/contact', form);
+      await api.post('/api/contact', form);
       setSuccess(true);
       setForm({ name: '', email: '', subject: '', message: '' });
     } catch (err) {

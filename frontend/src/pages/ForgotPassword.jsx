@@ -1,7 +1,7 @@
 // src/pages/ForgotPassword.jsx
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import axios from 'axios';
+import api from '../services/api';
 import { FaHeartbeat, FaEnvelope } from 'react-icons/fa';
 
 const ForgotPassword = () => {
@@ -17,7 +17,7 @@ const ForgotPassword = () => {
     setLoading(true);
 
     try {
-      const res = await axios.post('/api/auth/forgot-password', { email: email.trim() });
+      const res = await api.post('/api/auth/forgot-password', { email: email.trim() });
       if (res.data.success) {
         setMessage(res.data.message || 'Reset link sent to your email.');
       } else {

@@ -1,16 +1,21 @@
 // backend/controllers/eventController.js
-import nodemailer from 'nodemailer';
 import Event from '../models/Event.js';
 import Notification from '../models/Notification.js';
 import User from '../models/user.js';
 import { broadcastToAllDonorsReceivers } from '../sse.js';
 
-// ── Nodemailer transporter ───────────────────────────────────────────────────
-const createTransporter = () =>
-  nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-  });
+// Lazy transporter — initialised on first email send, not at startup
+let _transporter = null;
+const getTransporter = async () => {
+  if (!_transporter) {
+    const nodemailer = (await import('nodemailer')).default;
+    _transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+    });
+  }
+  return _transporter;
+};
 
 // ── Helper: event email HTML ─────────────────────────────────────────────────
 const buildEventEmail = (event, recipientName) => {
@@ -149,9 +154,8 @@ export const createEvent = async (req, res) => {
     let emailsSent = 0;
     const recipientsWithEmail = recipients.filter(u => u.email);
     if (recipientsWithEmail.length > 0) {
-      const transporter = createTransporter();
-      const emailPromises = recipientsWithEmail.map(u =>
-        transporter.sendMail({
+      const emailPromises = recipientsWithEmail.map(async u =>
+        (await getTransporter()).sendMail({
           from: `"BloodConnect" <${process.env.EMAIL_USER}>`,
           to: u.email,
           subject: `🩸 Blood Donation Drive: ${title} — ${event.hospitalName}`,
@@ -212,6 +216,10 @@ export const getHospitalEvents = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Hospitals only.' });
     }
     const events = await Event.find({ hospital: req.user._id })
+      .populate({
+        path: 'rsvps.user',
+        select: 'username email phone bloodGroup avatar location role',
+      })
       .sort({ createdAt: -1 })
       .lean();
 
@@ -248,6 +256,13 @@ export const updateEvent = async (req, res) => {
     allowed.forEach(field => {
       if (req.body[field] !== undefined) event[field] = req.body[field];
     });
+
+    // If a cover image file was uploaded via multer, override the image field
+    // with the public path. This takes precedence over any image URL in the body.
+    if (req.file) {
+      event.image = `/uploads/events/${req.file.filename}`;
+    }
+
     await event.save();
 
     res.json({ success: true, message: 'Event updated.', event });

@@ -2,6 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── Print styles (certificate) ─────────────────────────────────────── */
+@media print {
+  .no-print { display: none !important; }
+  body { background: white !important; }
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
@@ -9,5 +15,66 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Render text with fallback font immediately; swap in web font when ready */
+  font-display: swap;
+}
+
+/* ── Leaflet Map Fixes (Vite icon path bug) ────────────────────────── */
+.leaflet-default-icon-path {
+  background-image: url(https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-icon.png);
+}
+
+/* ── Emergency Pulse Animation ─────────────────────────────────────── */
+@keyframes ping-red {
+  0%   { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7); transform: scale(1); }
+  70%  { box-shadow: 0 0 0 18px rgba(220, 38, 38, 0); transform: scale(1.1); }
+  100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); transform: scale(1); }
+}
+
+.emergency-pulse-dot {
+  width: 18px;
+  height: 18px;
+  background: #dc2626;
+  border: 3px solid white;
+  border-radius: 50%;
+  animation: ping-red 1.2s ease-out infinite;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.4);
+}
+
+/* ── Blood Group Marker Dots ────────────────────────────────────────── */
+.blood-marker-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50% 50% 50% 0;
+  transform: rotate(-45deg);
+  border: 3px solid white;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+}
+
+.blood-marker-label {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) rotate(45deg);
+  font-size: 7px;
+  font-weight: 800;
+  color: white;
+  white-space: nowrap;
+  line-height: 1;
+}
+
+/* ── Leaflet popup custom style ─────────────────────────────────────── */
+.leaflet-popup-content-wrapper {
+  border-radius: 14px !important;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.15) !important;
+  padding: 0 !important;
+  overflow: hidden;
+}
+.leaflet-popup-content {
+  margin: 0 !important;
+  width: auto !important;
+}
+.leaflet-popup-tip-container {
+  margin-top: -1px;
 }
 
