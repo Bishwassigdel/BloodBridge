@@ -1,12 +1,12 @@
 # BloodConnect — Full Project Guide
 
-> Last updated: April 2026
+> Last updated: May 2026 — Project complete
 
 ---
 
 ## 📋 What Is BloodConnect?
 
-BloodConnect is a full-stack blood donation platform that connects three types of users — **donors**, **receivers**, and **hospitals** — in real time. It handles everything from blood requests and donation tracking to hospital inventory management, inter-hospital blood transfers, community stories, blood drive events, and email notifications.
+BloodConnect (also known as BloodBridge) is a full-stack blood donation platform that connects three types of users — **donors**, **receivers**, and **hospitals** — in real time. It handles everything from blood requests and donation tracking to hospital inventory management, inter-hospital blood transfers, community stories, blood drive events, interactive maps, push notifications, and email notifications.
 
 ---
 
@@ -17,7 +17,7 @@ BloodConnect is a full-stack blood donation platform that connects three types o
 │             FRONTEND  (React + Vite)                │
 │              http://localhost:5173                  │
 │                                                     │
-│  axios (auto JWT)  +  fetch()  +  EventSource SSE  │
+│  axios (auto JWT)  +  api.ts  +  EventSource SSE   │
 └────────────────────────┬────────────────────────────┘
                          │ HTTP + SSE
                          ▼
@@ -44,7 +44,7 @@ BloodConnect is a full-stack blood donation platform that connects three types o
 ```
 BloodConnect/
 ├── PROJECT_GUIDE.md              ← You are here
-├── package.json                  ← Root-level scripts
+├── package.json                  ← Root-level scripts (run both servers at once)
 │
 ├── backend/
 │   ├── server.js                 ← Express app entry point + SSE setup
@@ -53,11 +53,12 @@ BloodConnect/
 │   ├── package.json
 │   │
 │   ├── config/
-│   │   └── dbconnection.js       ← MongoDB connection (mongoose.connect)
+│   │   ├── dbconnection.js       ← MongoDB connection (mongoose.connect)
+│   │   └── cache.js              ← In-memory response cache (GET dedup)
 │   │
 │   ├── controllers/              ← Business logic (called by routes)
 │   │   ├── authController.js     ← Signup, login, OTP, Google OAuth, profile
-│   │   ├── bloodController.js    ← Blood requests + donor matching
+│   │   ├── bloodController.js    ← Blood requests + donor matching + map endpoints
 │   │   ├── donationController.js ← Donation history & manual recording
 │   │   ├── eventController.js    ← Blood drive events + RSVPs
 │   │   ├── inventoryController.js← Hospital blood stock management
@@ -68,7 +69,7 @@ BloodConnect/
 │   ├── middleware/
 │   │   ├── authMiddleware.js     ← JWT verification (protect middleware)
 │   │   ├── roleMiddleware.js     ← Role-based access (restrictTo middleware)
-│   │   └── multer.js             ← Avatar image upload handler
+│   │   └── multer.js             ← Avatar & event image upload handler
 │   │
 │   ├── models/                   ← MongoDB schemas (Mongoose)
 │   │   ├── user.js
@@ -88,65 +89,80 @@ BloodConnect/
 │   │   ├── notification.js       ← /api/notifications/*
 │   │   └── story.js              ← /api/stories/*
 │   │
-│   └── public/uploads/avatars/   ← Uploaded avatar image files
+│   └── public/uploads/
+│       ├── avatars/              ← Uploaded user avatar images
+│       └── events/               ← Uploaded event banner images
 │
 └── frontend/
     ├── index.html
-    ├── vite.config.js
+    ├── vite.config.ts            ← Vite config with pre-bundling + proxy + COOP
     ├── tailwind.config.js
-    ├── .env                       ← Frontend env variables
+    ├── clean-start.sh            ← Dev script: clears cache, pre-bundles deps, starts server
+    ├── .env                      ← Frontend env variables
     ├── package.json
     │
     └── src/
-        ├── main.jsx               ← React entry point
-        ├── App.jsx                ← Router + route definitions
+        ├── main.jsx              ← React entry point
+        ├── App.jsx               ← Router + route definitions
         │
         ├── context/
-        │   └── AuthContext.jsx    ← Global auth state + axios interceptors
+        │   └── AuthContext.jsx   ← Global auth state + axios interceptors (memoized)
         │
         ├── services/
-        │   └── api.ts             ← fetch()-based API for signup/login
+        │   └── api.ts            ← Axios instance with GET cache + in-flight dedup
         │
         ├── hooks/
-        │   ├── useCounter.js      ← Animated counter hook (stats on Home)
-        │   └── useScrollAnimation.js ← Scroll-triggered animation hook
+        │   ├── useCounter.js         ← rAF-based animated counter (stats on Home)
+        │   ├── useScrollAnimation.js ← IntersectionObserver scroll-trigger hook
+        │   ├── useGeolocation.js     ← GPS location + reverse geocoding hook
+        │   └── usePushNotifications.js ← Web Push API + service worker hook
         │
         ├── data/
-        │   └── dummyData.js       ← Static mock data used in UI
+        │   └── dummyData.js      ← Static data (bloodGroups list used in Home)
         │
         ├── pages/
-        │   ├── Home.jsx           ← Public landing page
-        │   ├── Login.jsx          ← Login + Google OAuth
-        │   ├── Register.jsx       ← Multi-role signup form
-        │   ├── VerifyEmail.jsx    ← OTP verification page
-        │   ├── ForgotPassword.jsx ← Password reset request
-        │   ├── ResetPassword.jsx  ← New password entry (from email link)
-        │   ├── dashboard.jsx      ← Donor & receiver unified dashboard
+        │   ├── Home.jsx              ← Public landing page (map, stats, events, stories)
+        │   ├── Login.jsx             ← Login + Google OAuth
+        │   ├── Register.jsx          ← Multi-role signup (donor/receiver/hospital)
+        │   ├── VerifyEmail.jsx       ← OTP verification page
+        │   ├── ForgotPassword.jsx    ← Password reset request
+        │   ├── ResetPassword.jsx     ← New password entry (from email link)
+        │   ├── dashboard.jsx         ← Donor & receiver unified dashboard
         │   ├── HospitalDashboard.jsx ← Hospital-specific dashboard
-        │   ├── BloodRequest.jsx   ← Create/manage blood requests
-        │   ├── BloodTransfer.jsx  ← Accept/reject transfer (token from email)
-        │   ├── Profile.jsx        ← View profile page
-        │   ├── EditProfile.jsx    ← Edit profile (donor/receiver)
+        │   ├── BloodRequest.jsx      ← Create/manage blood requests
+        │   ├── BloodTransfer.jsx     ← Accept/reject transfer (token from email)
+        │   ├── Profile.jsx           ← View profile page
+        │   ├── EditProfile.jsx       ← Edit profile (donor/receiver)
         │   ├── HospitalEditProfile.jsx ← Edit profile (hospital)
-        │   ├── SearchDonors.jsx   ← Search & filter donors
-        │   ├── SubmitStory.jsx    ← Story submission page
-        │   ├── Contact.jsx        ← Contact page
-        │   └── EmergencyRespond.jsx ← Emergency response page
+        │   ├── SearchDonors.jsx      ← Search & filter donors with map view
+        │   ├── SubmitStory.jsx       ← Story submission page
+        │   ├── EmergencyRespond.jsx  ← Emergency SOS response page
+        │   └── Contact.jsx           ← Contact page
         │
-        └── components/
-            ├── Navbar.jsx
-            ├── Footer.jsx
-            ├── ProtectedRoute.jsx ← Redirects unauthenticated users to /login
-            ├── Toast.jsx          ← Toast notification UI
-            ├── Button.jsx         ← Reusable button component
-            ├── LifeSaverModal.jsx ← Celebration modal after accepting donation
-            ├── DonorEligibility.jsx ← Shows 56-day cooldown countdown
-            └── NotFound.jsx       ← 404 page
+        ├── components/
+        │   ├── Navbar.jsx            ← Top navigation bar
+        │   ├── Footer.jsx            ← Site footer
+        │   ├── MapPicker.jsx         ← Leaflet map component (lazy loaded on all pages)
+        │   ├── ProtectedRoute.jsx    ← Redirects unauthenticated users to /login
+        │   ├── Toast.jsx             ← Toast notification UI
+        │   ├── LifeSaverModal.jsx    ← Celebration modal after accepting donation
+        │   ├── DonationCertificate.jsx ← Printable donation certificate component
+        │   ├── DonorEligibility.jsx  ← 56-day cooldown countdown display
+        │   └── NotFound.jsx          ← 404 page
+        │
+        └── public/
+            ├── favicon.ico
+            └── sw.js                 ← Service worker for Web Push notifications
 ```
 
 ---
 
 ## ⚙️ Setup & Running
+
+### Prerequisites
+- Node.js 18+
+- MongoDB running locally (`mongod`)
+- Gmail account with an App Password
 
 ### Backend
 
@@ -169,7 +185,7 @@ NODE_ENV=development
 ```
 
 ```bash
-mongod                 # Start MongoDB
+mongod                 # Start MongoDB (separate terminal)
 npm run dev            # Start backend (port 3001)
 ```
 
@@ -187,8 +203,21 @@ VITE_GOOGLE_CLIENT_ID=your-google-oauth-client-id
 VITE_API_URL=http://localhost:3001
 ```
 
+**First-time or slow-start fix — use the clean start script:**
+```bash
+bash clean-start.sh    # Clears Vite cache, pre-bundles all deps, then starts server
+```
+
+**Normal dev start:**
 ```bash
 npm run dev            # Start frontend (port 5173)
+```
+
+### Run Both at Once (from project root)
+
+```bash
+cd BloodConnect
+npm run dev            # Starts backend + frontend simultaneously via concurrently
 ```
 
 ---
@@ -197,25 +226,22 @@ npm run dev            # Start frontend (port 5173)
 
 There are **three communication channels**:
 
-### 1. fetch() — Initial Auth Only (`api.ts`)
-Used only for `/auth/signup` and `/auth/login`. A thin wrapper around the native `fetch()` API.
+### 1. api.ts — HTTP API Calls
+A configured axios instance with GET response caching and in-flight request deduplication. Used across all pages for API calls. Automatically attaches `Authorization: Bearer <token>` from `localStorage`.
 
 ```
-API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001/api'
+baseURL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
 ```
 
-### 2. axios — All Other API Calls (`AuthContext.jsx`)
-Every other API call uses axios. `AuthContext.jsx` configures two interceptors globally:
+### 2. AuthContext.jsx — Global Auth + Axios Interceptors
+Manages user session state globally. Configures axios interceptors:
+- **Request:** Attaches JWT token to every request header automatically
+- **Response:** On `401 Unauthorized` → clears localStorage → redirects to `/login`
 
-- **Request interceptor:** Reads `token` from `localStorage` → attaches `Authorization: Bearer <token>` header automatically to every request.
-- **Response interceptor:** If response is `401 Unauthorized` → clears localStorage → redirects user to `/login`.
+All auth functions (`login`, `logout`, `signup`, `googleLogin`, etc.) are memoized with `useCallback`. Context value is memoized with `useMemo` to prevent unnecessary re-renders across all consuming components.
 
-```
-axios.defaults.baseURL = import.meta.env.VITE_API_URL || 'http://localhost:3001'
-```
-
-### 3. EventSource SSE — Real-Time Notifications (`dashboard.jsx`)
-For real-time push updates (e.g., instant SOS alerts to matching donors):
+### 3. EventSource SSE — Real-Time Notifications
+For real-time push updates (instant SOS alerts to matching donors, request updates):
 
 ```javascript
 const es = new EventSource(`/api/sse?token=${token}`)
@@ -225,7 +251,7 @@ es.addEventListener('request_fulfilled', handler)
 es.addEventListener('event_notification', handler)
 ```
 
-The backend keeps an in-memory `Map` of `userId → response stream`. A heartbeat ping is sent every 25 seconds to keep connections alive.
+The backend keeps an in-memory `Map` of `userId → response stream`. A heartbeat ping is sent every 25 seconds to keep connections alive through proxies and load balancers.
 
 ---
 
@@ -240,10 +266,11 @@ The backend keeps an in-memory `Map` of `userId → response stream`. A heartbea
 | POST | `/verify-email` | Public | Submit OTP code to activate account |
 | POST | `/resend-verification` | Public | Resend OTP to registered email |
 | GET | `/me` | Protected | Get current user profile. Also auto-resets `isAvailable` if 56 days have passed since last donation |
-| PATCH | `/profile` | Protected | Update name, phone, avatar (file upload), address, emergency contact |
+| GET | `/hospitals` | Public | Get list of all hospitals (used for map + search) |
+| PATCH | `/profile` | Protected | Update name, phone, avatar (file upload), address, location, coordinates |
 | POST | `/forgot-password` | Public | Send password reset link to email |
 | POST | `/reset-password` | Public | Reset password using token from email link |
-| POST | `/set-password` | Protected | Set or change password (works for Google OAuth users who have no password yet) |
+| POST | `/set-password` | Protected | Set or change password (for Google OAuth users who have no password yet) |
 | POST | `/google` | Public | Verify Google credential token → find or create account → return JWT |
 
 ---
@@ -265,6 +292,8 @@ The backend keeps an in-memory `Map` of `userId → response stream`. A heartbea
 | GET | `/my-donations` | Donor only | Get full donation history |
 | GET | `/stats` | Public | Get platform-wide statistics (total requests, donors, fulfilled, etc.) |
 | GET | `/email-respond` | Public | Accept or reject a blood request via emailed link (token-based, no login needed) |
+| GET | `/search-donors` | Protected | Search donors by blood group, location, availability — returns map-ready coordinates |
+| GET | `/active-requests-map` | Public | Get all active blood requests with coordinates for map display |
 
 #### Hospital-Only Blood Routes
 
@@ -309,7 +338,7 @@ The backend keeps an in-memory `Map` of `userId → response stream`. A heartbea
 |--------|----------|------|--------|-------------|
 | GET | `/` | Protected | All roles | Get all upcoming blood drive events |
 | GET | `/mine` | Protected | Hospital | Get only this hospital's events |
-| POST | `/` | Protected | Hospital | Create a new blood drive event |
+| POST | `/` | Protected | Hospital | Create a new blood drive event (with image upload) |
 | PATCH | `/:id` | Protected | Hospital | Update own event details |
 | DELETE | `/:id` | Protected | Hospital | Cancel/delete own event |
 | POST | `/:id/rsvp` | Protected | Donor/Receiver | RSVP to an event (attending or declined) |
@@ -344,6 +373,8 @@ The backend keeps an in-memory `Map` of `userId → response stream`. A heartbea
 | Cancel / Edit own request | ✅ | ✅ | ✅ |
 | View donation history | ✅ | — | — |
 | Manually record donation | ✅ | — | — |
+| Emergency SOS respond | ✅ | — | — |
+| Generate donation certificate | ✅ | — | — |
 | Manage blood inventory | — | — | ✅ |
 | View inventory logs | — | — | ✅ |
 | Create blood transfers | — | — | ✅ |
@@ -353,6 +384,7 @@ The backend keeps an in-memory `Map` of `userId → response stream`. A heartbea
 | Share community stories | ✅ | ✅ | ✅ |
 | Edit profile | ✅ | ✅ | ✅ |
 | View platform stats | ✅ | ✅ | ✅ |
+| Search donors on map | ✅ | ✅ | ✅ |
 
 ---
 
@@ -367,6 +399,7 @@ googleId          String (only for Google OAuth accounts)
 bloodGroup        Enum: A+ A- B+ B- O+ O- AB+ AB-
 phone             String
 location          String
+coordinates       { lat: Number, lng: Number }
 role              Enum: donor | receiver | hospital  (required)
 isAvailable       Boolean (default: true) — set to false during 56-day cooldown
 lastDonation      Date — used to calculate cooldown end date
@@ -418,7 +451,9 @@ description       String
 date              Date (required)
 time              String (e.g. "10:00 AM – 4:00 PM")
 location          String (required)
+coordinates       { lat: Number, lng: Number }
 contactPhone      String
+image             String — uploaded event banner image path
 bloodGroupsNeeded [Enum] — which blood types are needed (or "All")
 targetDonors      Number (default: 0)
 hospital          ObjectId → users (required)
@@ -538,20 +573,42 @@ router.patch('/:id/fulfill', protect, restrictTo('receiver'), fulfillRequest)
 7. First-time Google users select their role in the UI before step 3
 ```
 
+**Important:** `http://localhost:5173` must be added to Authorized JavaScript Origins in Google Cloud Console for local dev to work.
+
 ---
 
 ## 📬 Email Notifications (Nodemailer + Gmail SMTP)
-
-Your Gmail account sends all system emails using `nodemailer` with Gmail SMTP.
 
 | Trigger | Recipient | Content |
 |---------|-----------|---------|
 | Signup | New user | 6-digit OTP (expires 15 min) |
 | Forgot password | User | Password reset link with token |
-| Blood transfer created | Target hospital | Transfer details + **Accept** and **Reject** links (token-based, 7-day expiry) |
+| Blood transfer created | Target hospital | Transfer details + Accept and Reject links (token-based, 7-day expiry) |
 | Email-based blood request response | Donor | Accept/decline link for blood request (no login needed) |
 | Low blood stock | Hospital | Alert when a blood group inventory drops below threshold |
 | Near expiry | Hospital | Alert when blood units are approaching their expiry date |
+
+---
+
+## 🗺️ Maps Feature (Leaflet + react-leaflet)
+
+The app has a full interactive map system:
+
+- **Home page** — Shows nearby donors, hospitals, and active blood requests on a single map. Data is loaded lazily only when the map section scrolls into view (IntersectionObserver).
+- **SearchDonors page** — Toggle between list view and map view. Donors shown as pins with blood group + distance info.
+- **Dashboard / BloodRequest / Profile / Register / EditProfile / HospitalEditProfile / EmergencyRespond** — `MapPicker` component lets users pick their location by clicking on the map or using GPS.
+
+`MapPicker` is **lazy loaded** on every page that uses it (`React.lazy` + `Suspense`) so Leaflet (~150KB) is never included in the initial bundle.
+
+---
+
+## 🔔 Push Notifications (Web Push API)
+
+The `usePushNotifications` hook in `frontend/src/hooks/usePushNotifications.js` handles browser push notifications:
+
+- Registers `public/sw.js` as a service worker
+- Requests browser notification permission
+- Used in `dashboard.jsx` and `HospitalDashboard.jsx` to display native OS push alerts alongside SSE events
 
 ---
 
@@ -567,7 +624,7 @@ Your Gmail account sends all system emails using `nodemailer` with Gmail SMTP.
 ### Blood Request Lifecycle
 ```
 Receiver creates request  →  status: pending
-                          →  SSE alert sent to all matching donors
+                          →  SSE alert sent to all matching available donors
                           →  (Optional) Email sent to donors with accept/reject link
 
 Donor accepts request     →  status: accepted
@@ -599,7 +656,7 @@ Hospital B rejects           →  Transfer status: rejected
 
 ### Hospital Inventory
 - Every `add` or `subtract` action is logged in `InventoryLog` with before/after values
-- Actions include: `add`, `subtract`, `transfer_out`, `transfer_in`
+- Actions: `add`, `subtract`, `transfer_out`, `transfer_in`
 - Automatic alerts sent when stock drops below threshold or approaches expiry
 - One `Inventory` record per (hospital + blood group) combination
 
@@ -612,8 +669,7 @@ USER ACTION (browser)
        │
        ▼
 FRONTEND (React @ localhost:5173)
-  ├── fetch()    → POST /api/auth/signup, /api/auth/login
-  ├── axios      → All other /api/* calls (JWT auto-attached)
+  ├── api.ts     → All /api/* calls (JWT auto-attached, GET cached)
   └── EventSource→ GET /api/sse?token=<JWT>  (real-time stream)
        │
        ▼
@@ -647,12 +703,9 @@ BACKEND (Express @ localhost:3001)
 
 EXTERNAL SERVICES
   ├── Gmail SMTP (smtp.gmail.com)
-  │     Account: bishwashsigdel123@gmail.com
-  │     Auth: App Password (not regular password)
   │     Sends: OTPs, password resets, transfer emails, inventory alerts
   │
   └── Google OAuth 2.0 (accounts.google.com)
-        Client ID: 1013497841660-lr12llscl53ppbjnf33v4lbrg2lgla1j.apps.googleusercontent.com
         Used in: Frontend button (@react-oauth/google)
                  Backend verification (google-auth-library)
 ```
@@ -669,7 +722,7 @@ EXTERNAL SERVICES
 | `bcryptjs` | Password hashing (10 rounds) |
 | `jsonwebtoken` | JWT creation and verification (30-day expiry) |
 | `nodemailer` | Email sending via Gmail SMTP |
-| `multer` | Avatar image upload handling |
+| `multer` | Avatar & event image upload handling |
 | `cors` | Cross-Origin Resource Sharing headers |
 | `dotenv` | Load environment variables from `.env` |
 | `compression` | Compress HTTP responses (gzip) |
@@ -682,29 +735,26 @@ EXTERNAL SERVICES
 | `react-router-dom` | Client-side routing (v6) |
 | `axios` | HTTP client with interceptors for auth |
 | `@react-oauth/google` | Google Sign-In button component |
-| `react-icons` | Icon library (Font Awesome etc.) |
+| `leaflet` + `react-leaflet` | Interactive maps (lazy loaded) |
+| `react-icons` | Icon library (Font Awesome, Material, etc.) |
 | `tailwindcss` | Utility-first CSS framework |
-| `vite` | Dev server and build tool |
+| `vite` | Dev server and build tool (fast HMR + pre-bundling) |
 
 ---
 
-## 🌐 CORS Configuration
+## ⚡ Frontend Performance
 
-The backend allows requests from:
-```javascript
-origin: [
-  'http://localhost:5173',   // Vite dev server
-  'http://localhost:3000',   // Create React App backup
-  process.env.FRONTEND_URL   // Production URL from .env
-],
-credentials: true
-```
+The frontend has been optimized end-to-end:
 
-Special headers for Google OAuth popup support:
-```
-Cross-Origin-Opener-Policy: same-origin-allow-popups
-Cross-Origin-Embedder-Policy: require-corp
-```
+- **Lazy loading** — `MapPicker` (Leaflet) is `React.lazy()` on all 10 pages that use it. Leaflet is never in the initial bundle.
+- **Vite pre-bundling** — `vite optimize` pre-bundles all heavy deps into `node_modules/.vite/` before the server starts. First page load is instant.
+- **Scroll-based API deferral** — Home page map data loads only when the map section is visible (IntersectionObserver). Stats, events, and stories are staggered with small timeouts.
+- **Ref-based parallax** — Scroll animations on Home use `requestAnimationFrame` + direct DOM mutation via refs. No React re-renders on scroll.
+- **Memoized context** — `AuthContext` wraps all functions in `useCallback` and the context value in `useMemo`. No unnecessary consumer re-renders.
+- **rAF counter animation** — `useCounter` uses a single `requestAnimationFrame` loop instead of dozens of `setState` calls.
+- **Passive scroll listeners** — All scroll event listeners use `{ passive: true }`.
+- **GET deduplication** — `api.ts` deduplicates in-flight requests and short-caches GET responses.
+- **Polling reduced** — Dashboard SSE handles real-time updates; polling fallback is every 120 seconds.
 
 ---
 
@@ -723,9 +773,30 @@ Cross-Origin-Embedder-Policy: require-corp
 | `/profile` | Profile.jsx | Protected | View own profile |
 | `/profile/edit` | EditProfile.jsx | Protected | Edit profile (donor/receiver) |
 | `/hospital/edit` | HospitalEditProfile.jsx | Hospital | Edit hospital profile |
-| `/search-donors` | SearchDonors.jsx | Protected | Search donors by blood group/location |
-| `/blood-transfer` | BloodTransfer.jsx | Public | Accept/reject transfer via email token |
+| `/search-donors` | SearchDonors.jsx | Protected | Search donors by blood group/location with map view |
+| `/submit-story` | SubmitStory.jsx | Protected | Share a blood donation story |
+| `/emergency-respond` | EmergencyRespond.jsx | Protected | Respond to emergency SOS requests |
+| `/blood-transfer` | BloodTransfer.jsx | Public | Accept/reject blood transfer via email token |
 | `/contact` | Contact.jsx | Public | Contact page |
+
+---
+
+## 🌐 CORS Configuration
+
+The backend allows requests from:
+```javascript
+origin: [
+  'http://localhost:5173',   // Vite dev server
+  'http://localhost:3000',   // fallback
+  process.env.FRONTEND_URL   // Production URL from .env
+],
+credentials: true
+```
+
+The Vite dev server sets this header for Google OAuth popup compatibility:
+```
+Cross-Origin-Opener-Policy: unsafe-none
+```
 
 ---
 
@@ -734,16 +805,22 @@ Cross-Origin-Embedder-Policy: require-corp
 **Backend won't start**
 - Check if MongoDB is running: `mongod`
 - Verify `.env` file exists in `backend/` with all required fields
-- Make sure port 3001 is not already in use
+- Make sure port 3001 is not already in use: `lsof -i :3001`
+
+**Frontend loads slowly on first start**
+- Run `bash clean-start.sh` from the `frontend/` folder instead of `npm run dev`
+- This clears the Vite cache, runs `vite optimize` to pre-bundle all deps, then starts the server
 
 **OTP email not arriving**
 - Ensure `EMAIL_PASS` is a Gmail **App Password** (not your regular password)
 - Go to Google Account → Security → 2-Step Verification → App Passwords
 - Check spam/junk folder
 
-**Google OAuth not working**
+**Google OAuth not working (403 error)**
 - `GOOGLE_CLIENT_ID` must match in both `backend/.env` and `frontend/.env`
-- Your `localhost:5173` must be listed in Google Cloud Console → OAuth → Authorized JavaScript origins
+- Go to Google Cloud Console → APIs & Services → Credentials → your OAuth Client ID
+- Add `http://localhost:5173` to **Authorized JavaScript origins** → Save
+- Changes take up to 5 minutes to propagate
 
 **Frontend can't reach backend**
 - Confirm backend is running on port 3001
@@ -760,10 +837,9 @@ Cross-Origin-Embedder-Policy: require-corp
 - Donor must have the same `bloodGroup` as the request and `isAvailable: true`
 - Donor cannot be the same user as the requester
 
-**Blood request not notifying donors**
-- Confirm donor's blood group matches the request
-- Check `isAvailable` is `true` in the user document
-- SSE stream must be connected (dashboard must be open)
+**Map not loading**
+- `leaflet` is lazy-loaded — wait for the `Suspense` fallback spinner to finish
+- Check browser console for Leaflet tile loading errors (may need internet connection)
 
 ---
 
@@ -775,27 +851,9 @@ Cross-Origin-Embedder-Policy: require-corp
 - **Stories are upserted** — each user has at most one story, updated in place
 - **Email-based blood request response** — donors can accept/reject via a tokenized email link without logging in
 - **Blood transfers use one-time confirmation tokens** — 32-byte hex, 7-day expiry, sent by email
-- **InventoryLog for full audit trail** — every inventory change (add/subtract/transfer) is logged with before/after values
+- **InventoryLog for full audit trail** — every inventory change is logged with before/after values
 - **SSE over WebSocket** — simpler, one-directional server-to-client push without socket overhead
-- **LifeSaver modal stays open** after accepting donation — intentional, to let the donor read the details
-- **Notifications fetched every 30 seconds** as backup alongside SSE push
-
----
-
-## 📦 Running Both Servers
-
-Open two terminals:
-
-```bash
-# Terminal 1 — Backend
-cd BloodConnect/backend
-npm run dev
-
-# Terminal 2 — Frontend
-cd BloodConnect/frontend
-npm run dev
-```
-
-Open your browser at `http://localhost:5173`
-
-So in short — sse.js is the real-time engine of your app. It's what makes BloodConnect feel live and instant rather than slow and refresh-dependent.
+- **MapPicker always lazy** — Leaflet is a 150KB library; loading it eagerly would add 150KB to every initial page load
+- **Vite `open: false`** — browser must not open before `vite optimize` finishes pre-bundling, or every dep transforms on-demand (causes slow blank-screen load)
+- **LifeSaver modal stays open** after accepting donation — intentional, lets the donor read the details
+- **Notifications polled every 120 seconds** as SSE backup (reduced from 30s since SSE handles real-time)
